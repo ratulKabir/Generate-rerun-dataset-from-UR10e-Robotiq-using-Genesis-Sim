@@ -187,7 +187,20 @@ def main():
     plane = scene.add_entity(gs.morphs.Plane())
     robot = scene.add_entity(gs.morphs.MJCF(file=args.robot))
 
-    _cube = scene.add_entity(gs.morphs.Box(size=(0.14, 0.14, 0.14), pos=(-0.65, -0.5, 0.02)))
+    # Cube: center-positioned; set z to half the height so it sits on the plane
+    cube_size = (0.07, 0.07, 0.07)
+    cube = scene.add_entity(
+        gs.morphs.Box(
+            size=cube_size,                         # (x, y, z) extents in meters
+            pos=(-0.65, -0.5, cube_size[2] / 2.0),  # center position; z = half height
+            fixed=False,                            # dynamic body (not fixed to world)
+            collision=True,                         # participates in collisions
+            visualization=True,                     # render it
+            contype=0xFFFF,
+            conaffinity=0xFFFF,
+            # quat/euler optional; if used, quat is (w, x, y, z)
+        )
+    )
 
     motors_dof_idx = find_motors_idx(robot, UR10E_JOINTS)
 
@@ -297,8 +310,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("Interrupted.")
-        sys.exit(130)
+    main()
