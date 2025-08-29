@@ -246,7 +246,7 @@ def prepare_env(args):
         robot = scene.add_entity(gs.morphs.MJCF(file=args.robot))
 
         # Cube: center-positioned; set z to half the height so it sits on the plane
-        cube_size = (0.07, 0.07, 0.07)
+        cube_size = (0.04, 0.04, 0.05)
         _cube = scene.add_entity(
             gs.morphs.Box(
                 size=cube_size,                         # (x, y, z) extents in meters
@@ -272,18 +272,18 @@ def prepare_env(args):
             try:
                 cam = scene.add_camera(
                     res=tuple(args.cam_res),
-                    pos=(0.0, 0.0, 1.0),
+                    pos=(0.0, 0.0, 0.0),
                     lookat=(0.0, 0.0, 0.0),
-                    # fov=40,
+                    fov=50,
                     GUI=False,
                 )
 
                 # Build an offset transform: translation + rotation relative to link
                 offset_T = np.eye(4, dtype=np.float32)
-                offset_T[:3, 3] = np.array([-0.5, 0.0, 0.5], dtype=np.float32) 
+                offset_T[:3, 3] = np.array([0.0, 0.0, 0.2], dtype=np.float32) 
 
-                # rotation: tilt down around X-axis by 45°
-                theta = np.deg2rad(-25)  # negative = look downward
+                # rotation: tilt down around X-axis
+                theta = np.deg2rad(60)  
                 R_x = np.array([
                     [1, 0, 0],
                     [0, np.cos(theta), -np.sin(theta)],

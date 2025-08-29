@@ -6,5 +6,10 @@
 - [Example UR10e + Robotiq 2F-85](https://github.com/google-deepmind/mujoco_menagerie/issues/37#issuecomment-1862723050)
 
 
+View the last recorded rerun file:
+`rerun viewer $(ls -t outputs/dataset/*.rrd | head -n 1)`
+
+
+
 ## References
 [1] [mujoco_menagerie](https://github.com/google-deepmind/mujoco_menagerie)
