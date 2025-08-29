@@ -38,7 +38,8 @@ HOVER_IN   = 0.8   # pre-grasp / pre-place hover height above surface [m]
 HOVER_OUT  = 0.8   # post-grasp / post-place retreat height [m]
 MARGIN_Z   = 0.28  # how close to the top surface we descend before closing/opening [m]
 DWELL_STEPS = 12    # small hold after closing before lifting (lets contacts settle)
-STEPS_PER_SEGMENT = 250  # IK interpolation per segment (approach/lift/place)
+STEPS_PER_SEGMENT = 120  # IK interpolation per segment (approach/lift/place)
+HOME_QPOSE = np.array([math.pi/2, -math.pi/2, math.pi/2, -math.pi/2, -math.pi/2, 0], dtype=np.float32)
 
 # ----------------------------- CLI -----------------------------
 
@@ -394,7 +395,7 @@ def prepare_env(args):
 
         scene.build(n_envs=1) # TODO: n_envs > 1 is not tested
         
-        home_qpos = np.array([math.pi/2, -math.pi/2, math.pi/2, -math.pi/2, -math.pi/2, 0], dtype=np.float32)
+        home_qpos = HOME_QPOSE
         robot.set_dofs_position(home_qpos, motors_dof_idx)
 
         return scene, robot, ee, _cube, home_qpos, motors_dof_idx, logger, cam
@@ -430,7 +431,7 @@ def get_path(robot, ee, _cube, motors_dof_idx):
     )
 
     # 6) Append a return-to-home at the end
-    home_qpos = np.array([0, -math.pi/2, math.pi/2, -math.pi/2, -math.pi/2, 0], dtype=np.float32)
+    home_qpos = HOME_QPOSE
 
     tail = []
     if path.shape[0] > 0:
