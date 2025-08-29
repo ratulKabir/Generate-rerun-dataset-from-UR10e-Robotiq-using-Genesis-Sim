@@ -33,6 +33,13 @@ from datetime import datetime
 from typing import List, Optional, Tuple
 
 
+# --- Pick & place tuning params ---
+HOVER_IN   = 0.8   # pre-grasp / pre-place hover height above surface [m]
+HOVER_OUT  = 0.8   # post-grasp / post-place retreat height [m]
+MARGIN_Z   = 0.28  # how close to the top surface we descend before closing/opening [m]
+DWELL_STEPS = 12    # small hold after closing before lifting (lets contacts settle)
+STEPS_PER_SEGMENT = 250  # IK interpolation per segment (approach/lift/place)
+
 # ----------------------------- CLI -----------------------------
 
 def parse_args() -> argparse.Namespace:
@@ -51,7 +58,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--duration", type=float, default=None,
                    help="Optional max duration [s] (overrides trajectory length)")
     return p.parse_args()
-
 
 # -------- Gripper helpers (best-effort for Robotiq 2F) --------
 
@@ -102,24 +108,113 @@ def cartesian_waypoint_path(robot, ee, waypoints_xyz: List[np.ndarray],
 
 def make_pick_place_waypoints(cube_pos: np.ndarray,
                               place_xyz: np.ndarray,
-                              hover_h: float = 0.15) -> List[np.ndarray]:
+                              hover_in: float = HOVER_IN,
+                              hover_out: float = HOVER_OUT,
+                              margin_z: float = MARGIN_Z,
+                              dwell_steps: int = DWELL_STEPS) -> Tuple[List[np.ndarray], List[int]]:
     """
-    Cartesian waypoints around grasp and place.
+    Build Cartesian waypoints (EE positions) for:
+      1) pregrasp (hover above cube, open)
+      2) descend to just above cube top (open)
+      3) dwell at same pose to close gripper (open->close happens here)
+      4) postgrasp (lift up, closed)
+      5) preplace (move above place target, closed)
+      6) descend to just above place target (closed)
+      7) postplace (lift up, open after release)
+      8) (home handled separately)
+
+    Returns:
+      waypoints_xyz: list of np.array([x,y,z]) in sequence
+      event_markers: [close_at_step, open_at_step] as segment indices (for timing)
     """
-    grasp_xyz = cube_pos.copy()
-    grasp_xyz[2] += 0.035  # top of cube (half size)
-    pregrasp = grasp_xyz + np.array([0.0, 0.0, hover_h], np.float32)
+    # infer top surface z from cube center + half size known in prepare_env (0.07 → half 0.035)
+    cube_top_z  = cube_pos[2]            # you already place cube center at z = half size
+    place_top_z = place_xyz[2]           # you set this to 0.035 in get_path()
 
-    preplace = place_xyz + np.array([0.0, 0.0, hover_h], np.float32)
+    pregrasp   = np.array([cube_pos[0],  cube_pos[1],  cube_top_z  + hover_in],  np.float32)
+    grasp      = np.array([cube_pos[0],  cube_pos[1],  cube_top_z  + margin_z], np.float32)
 
-    return [
-        pregrasp,     # approach from above
-        grasp_xyz,    # descend to contact
-        pregrasp,     # lift back to hover (after closing)
-        preplace,     # move above place
-        place_xyz,    # descend for place
-        preplace,     # retreat up
+    postgrasp  = np.array([cube_pos[0],  cube_pos[1],  cube_top_z  + hover_out], np.float32)
+
+    preplace   = np.array([place_xyz[0], place_xyz[1], place_top_z + hover_in], np.float32)
+    place      = np.array([place_xyz[0], place_xyz[1], place_top_z + margin_z], np.float32)
+
+    postplace  = np.array([place_xyz[0], place_xyz[1], place_top_z + hover_out], np.float32)
+
+    waypoints_xyz: List[np.ndarray] = [
+        pregrasp,          # 1 approach above cube (open)
+        grasp,             # 2 descend near top (open)
+        *([grasp] * 1),    # 3 tiny segment to ensure a clean "close" event while stationary
+        postgrasp,         # 4 lift (closed)
+        preplace,          # 5 travel above place (closed)
+        place,             # 6 descend near top (closed)
+        postplace,         # 7 lift (open after release)
     ]
+
+    # We’ll handle dwell by inserting repeated points into the joint path (below),
+    # but we also want clean indices to trigger close/open while stationary:
+    # Segment indices (0-based) aligned with 'waypoints_xyz' above.
+    close_segment = 2   # after reaching 'grasp' and before lifting
+    open_segment  = 5   # after reaching 'place' (before postplace)
+
+    return waypoints_xyz, [close_segment, open_segment]
+
+
+def build_pick_place_joint_path(robot, ee,
+                                waypoints_xyz: List[np.ndarray],
+                                quat_wxyz: Optional[np.ndarray],
+                                steps_per_segment: int = STEPS_PER_SEGMENT,
+                                dwell_steps: int = DWELL_STEPS):
+    """
+    Convert the waypoint segments to a joint-space path via IK.
+    Inserts a small 'dwell' after the grasp segment so we can close while stationary.
+    Returns:
+      path: np.ndarray [T, ndof]
+      events: dict with 'close_step' and 'open_step' (indices in path)
+    """
+    # We'll generate per-segment paths then concatenate.
+    per_seg_paths: List[np.ndarray] = []
+    seg_start_step_idx: List[int] = []
+
+    tcursor = 0
+    for si in range(len(waypoints_xyz) - 1):
+        seg_start_step_idx.append(tcursor)
+        a = waypoints_xyz[si]
+        b = waypoints_xyz[si + 1]
+        seg_path = cartesian_waypoint_path(robot, ee, [a, b], quat_wxyz=quat_wxyz, steps_per_segment=steps_per_segment)
+        per_seg_paths.append(seg_path)
+        tcursor += len(seg_path)
+
+    path = np.concatenate(per_seg_paths, axis=0) if per_seg_paths else np.empty((0, robot.get_dofs_position().shape[-1]), dtype=np.float32)
+
+    # Insert dwell after the "grasp" segment (segment index 2 in our builder)
+    grasp_seg_idx = 2
+    if 0 <= grasp_seg_idx < len(per_seg_paths):
+        insert_at = seg_start_step_idx[grasp_seg_idx + 1]  # end of segment 2
+        if path.shape[0] > 0 and insert_at > 0:
+            dwell_block = np.repeat(path[insert_at - 1][None, :], dwell_steps, axis=0)
+            path = np.concatenate([path[:insert_at], dwell_block, path[insert_at:]], axis=0)
+            dwell_added = dwell_steps
+        else:
+            dwell_added = 0
+    else:
+        dwell_added = 0
+
+    # Compute event step indices for close/open (at end of segment 2 and 5 respectively)
+    def end_of_segment(seg_idx: int) -> int:
+        # sum of lengths of segments up to and including seg_idx
+        end = 0
+        for k in range(seg_idx + 1):
+            end += per_seg_paths[k].shape[0]
+            if k == grasp_seg_idx:
+                end += dwell_added  # dwell inserted here
+        return max(0, end - 1)
+
+    events = {
+        "close_step": end_of_segment(2),  # after grasp
+        "open_step":  end_of_segment(5),  # after place
+    }
+    return path, events
 
 
 # ------------------------- Helpers/Types ------------------------
@@ -299,35 +394,61 @@ def prepare_env(args):
 
         scene.build(n_envs=1) # TODO: n_envs > 1 is not tested
         
-        home_qpos = np.array([0, -math.pi/2, math.pi/2, -math.pi/2, -math.pi/2, 0], dtype=np.float32)
+        home_qpos = np.array([math.pi/2, -math.pi/2, math.pi/2, -math.pi/2, -math.pi/2, 0], dtype=np.float32)
         robot.set_dofs_position(home_qpos, motors_dof_idx)
 
         return scene, robot, ee, _cube, home_qpos, motors_dof_idx, logger, cam
 
-def get_path(args, robot, ee, _cube):
-    if args.traj is not None:
-        path = load_csv_traj(args.traj)
-    else:
-        # 1) Open gripper
-        set_gripper(robot, open_frac=1.0)
+def get_path(robot, ee, _cube, motors_dof_idx):
+    # 1) Ensure gripper open
+    set_gripper(robot, open_frac=1.0)
 
-        # 2) Fix EE orientation (keep whatever current wrist orientation is)
-        ee_quat_wxyz = ee.get_quat().cpu().numpy()[0]
-        quat_wxyz = ee_quat_wxyz.astype(np.float32)
+    # 2) Fix EE orientation (keep current wrist orientation, which should be tool-z vertical)
+    ee_quat_wxyz = ee.get_quat().cpu().numpy()[0].astype(np.float32)
 
-        # 3) Current cube position (center)
-        cube_pos = _cube.get_pos().cpu().numpy()[0].astype(np.float32)
+    # 3) Cube & place
+    cube_pos = _cube.get_pos().cpu().numpy()[0].astype(np.float32)
+    place_xyz = np.array([-0.30, 0.40, 0.035], dtype=np.float32)  # top surface target
 
-        # 4) Choose a place target (to the right side of robot, on table)
-        place_xyz = np.array([ -0.30, 0.40, 0.035], dtype=np.float32)
+    # 4) Waypoints for full pick-and-place
+    waypoints_xyz, seg_events = make_pick_place_waypoints(
+        cube_pos=cube_pos,
+        place_xyz=place_xyz,
+        hover_in=HOVER_IN,
+        hover_out=HOVER_OUT,
+        margin_z=MARGIN_Z,
+        dwell_steps=DWELL_STEPS,
+    )
 
-        # 5) Build Cartesian waypoints
-        waypoints = make_pick_place_waypoints(cube_pos, place_xyz, hover_h=0.18)
+    # 5) Path for those segments (+ dwell) and event steps
+    path, events = build_pick_place_joint_path(
+        robot, ee,
+        waypoints_xyz=waypoints_xyz,
+        quat_wxyz=ee_quat_wxyz,
+        steps_per_segment=STEPS_PER_SEGMENT,
+        dwell_steps=DWELL_STEPS,
+    )
 
-        # 6) Convert waypoints to a joint-space trajectory with IK
-        path = cartesian_waypoint_path(robot, ee, waypoints, quat_wxyz=quat_wxyz, steps_per_segment=90)
+    # 6) Append a return-to-home at the end
+    home_qpos = np.array([0, -math.pi/2, math.pi/2, -math.pi/2, -math.pi/2, 0], dtype=np.float32)
 
-    return path
+    tail = []
+    if path.shape[0] > 0:
+        q_curr = path[-1]  # full actuated dof vector (e.g., 14)
+        # Build a full-length target that keeps non-arm joints as-is
+        home_full = q_curr.copy()
+        home_full[motors_dof_idx] = home_qpos  # set only the 6 arm joints
+
+        for s in range(120):  # ~1–2s blend
+            u = (s + 1) / 120.0
+            tail.append((1 - u) * q_curr + u * home_full)
+
+    if tail:
+        path = np.concatenate([path, np.asarray(tail, dtype=np.float32)], axis=0)
+
+
+    return path, events
+
 
 
 def add_to_logger(logger, robot, ee, motors_dof_idx, t, q_cmd):
@@ -353,7 +474,7 @@ def main():
 
     scene, robot, ee, _cube, home_qpos, motors_dof_idx, logger, cam = prepare_env(args=args)
 
-    path = get_path(args, robot, ee, _cube)
+    path, events = get_path(robot, ee, _cube, motors_dof_idx)
     
     dt = float(scene.sim_options.dt)
     t = 0.0
@@ -366,13 +487,8 @@ def main():
     if args.duration is not None:
         total_steps = min(total_steps, int(round(args.duration / dt)))
 
-    # Event indices (aligned with the 6 waypoints × steps_per_segment in builder above)
-    steps_per_segment = 90  # must match cartesian_waypoint_path()
-    pre_grasp_end  = steps_per_segment - 1
-    grasp_end      = 2*steps_per_segment - 1
-    lift_end       = 3*steps_per_segment - 1
-    pre_place_end  = 4*steps_per_segment - 1
-    place_end      = 5*steps_per_segment - 1
+    close_step = events["close_step"]
+    open_step  = events["open_step"]
     
     for i in range(total_steps):
         try:
@@ -384,13 +500,11 @@ def main():
 
         scene.step()
 
-        # --- timed gripper events ---
-        if i == grasp_end:
-            # Close at contact
-            set_gripper(robot, open_frac=0.0)
-        if i == place_end:
-            # Open to release
-            set_gripper(robot, open_frac=1.0)
+        # --- timed gripper events (trigger exactly once) ---
+        if step == close_step:
+            set_gripper(robot, open_frac=0.0)  # close at grasp
+        if step == open_step:
+            set_gripper(robot, open_frac=1.0)  # open at place
 
         t += dt
         step += 1
