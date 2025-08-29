@@ -22,20 +22,15 @@ Notes:
 """
 from __future__ import annotations
 import os
-import sys
 import csv
 import math
 import argparse
 import torch
-import logging
-from dataclasses import dataclass
-from datetime import datetime
-from typing import List, Optional, Tuple
-
 import numpy as np
 import rerun as rr
 import genesis as gs
-from scipy.spatial.transform import Rotation as R
+from datetime import datetime
+from typing import List, Optional, Tuple
 
 
 # ----------------------------- CLI -----------------------------
