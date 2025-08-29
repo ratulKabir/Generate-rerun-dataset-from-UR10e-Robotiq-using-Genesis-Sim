@@ -37,8 +37,8 @@ from typing import List, Optional, Tuple
 HOVER_IN   = 0.8   # pre-grasp / pre-place hover height above surface [m]
 HOVER_OUT  = 0.8   # post-grasp / post-place retreat height [m]
 MARGIN_Z   = 0.28  # how close to the top surface we descend before closing/opening [m]
-DWELL_STEPS = 5    # small hold after closing before lifting (lets contacts settle)
-STEPS_PER_SEGMENT = 120  # IK interpolation per segment (approach/lift/place)
+DWELL_STEPS = 50    # small hold after closing before lifting (lets contacts settle)
+STEPS_PER_SEGMENT = 150  # IK interpolation per segment (approach/lift/place)
 HOME_QPOSE = np.array([math.pi/2, -math.pi/2, math.pi/2, -math.pi/2, -math.pi/2, 0], dtype=np.float32)
 
 # ----------------------------- CLI -----------------------------
@@ -143,20 +143,19 @@ def make_pick_place_waypoints(cube_pos: np.ndarray,
     postplace  = np.array([place_xyz[0], place_xyz[1], place_top_z + hover_out], np.float32)
 
     waypoints_xyz: List[np.ndarray] = [
-        pregrasp,          # 1 approach above cube (open)
-        grasp,             # 2 descend near top (open)
-        *([grasp] * dwell_steps),    # 3 tiny segment to ensure a clean "close" event while stationary
-        postgrasp,         # 4 lift (closed)
-        preplace,          # 5 travel above place (closed)
-        place,             # 6 descend near top (closed)
-        postplace,         # 7 lift (open after release)
+        pregrasp,   # seg 0: pregrasp -> grasp
+        grasp,      # seg 1: grasp -> postgrasp
+        postgrasp,  # seg 2: postgrasp -> preplace
+        preplace,   # seg 3: preplace -> place
+        place,      # seg 4: place -> postplace
+        postplace,
     ]
 
     # We’ll handle dwell by inserting repeated points into the joint path (below),
     # but we also want clean indices to trigger close/open while stationary:
     # Segment indices (0-based) aligned with 'waypoints_xyz' above.
-    close_segment = 2   # after reaching 'grasp' and before lifting
-    open_segment  = 5   # after reaching 'place' (before postplace)
+    close_segment = 0   # after reaching 'grasp' and before lifting
+    open_segment  = 3   # after reaching 'place' (before postplace)
 
     return waypoints_xyz, [close_segment, open_segment]
 
@@ -167,56 +166,63 @@ def build_pick_place_joint_path(robot, ee,
                                 steps_per_segment: int = STEPS_PER_SEGMENT,
                                 dwell_steps: int = DWELL_STEPS):
     """
-    Convert the waypoint segments to a joint-space path via IK.
-    Inserts a small 'dwell' after the grasp segment so we can close while stationary.
+    IK path between waypoints. Adds a dwell AFTER reaching 'grasp' so we can close while stationary.
     Returns:
-      path: np.ndarray [T, ndof]
-      events: dict with 'close_step' and 'open_step' (indices in path)
+      path:   [T, ndof]
+      events: {'close_step': int, 'open_step': int}
     """
-    # We'll generate per-segment paths then concatenate.
     per_seg_paths: List[np.ndarray] = []
     seg_start_step_idx: List[int] = []
-
     tcursor = 0
+
     for si in range(len(waypoints_xyz) - 1):
         seg_start_step_idx.append(tcursor)
-        a = waypoints_xyz[si]
-        b = waypoints_xyz[si + 1]
-        seg_path = cartesian_waypoint_path(robot, ee, [a, b], quat_wxyz=quat_wxyz, steps_per_segment=steps_per_segment)
+        a, b = waypoints_xyz[si], waypoints_xyz[si + 1]
+        seg_path = cartesian_waypoint_path(
+            robot, ee, [a, b],
+            quat_wxyz=quat_wxyz,
+            steps_per_segment=steps_per_segment
+        )
         per_seg_paths.append(seg_path)
         tcursor += len(seg_path)
 
-    path = np.concatenate(per_seg_paths, axis=0) if per_seg_paths else np.empty((0, robot.get_dofs_position().shape[-1]), dtype=np.float32)
+    ndof = robot.get_dofs_position().shape[-1]
+    path = np.concatenate(per_seg_paths, axis=0) if per_seg_paths else np.empty((0, ndof), dtype=np.float32)
 
-    # Insert dwell after the "grasp" segment (segment index 2 in our builder)
-    grasp_seg_idx = 2
-    if 0 <= grasp_seg_idx < len(per_seg_paths):
-        insert_at = seg_start_step_idx[grasp_seg_idx + 1]  # end of segment 2
-        if path.shape[0] > 0 and insert_at > 0:
-            dwell_block = np.repeat(path[insert_at - 1][None, :], dwell_steps, axis=0)
+    # Insert dwell right after finishing segment 0 (pregrasp->grasp)
+    grasp_seg_idx = 0
+    dwell_added = 0
+    insert_at = None
+    if per_seg_paths and dwell_steps > 0:
+        insert_at = seg_start_step_idx[grasp_seg_idx] + per_seg_paths[grasp_seg_idx].shape[0]
+        if 0 < insert_at <= path.shape[0]:
+            dwell_pose = path[insert_at - 1]
+            dwell_block = np.repeat(dwell_pose[None, :], dwell_steps, axis=0)
             path = np.concatenate([path[:insert_at], dwell_block, path[insert_at:]], axis=0)
             dwell_added = dwell_steps
         else:
-            dwell_added = 0
-    else:
-        dwell_added = 0
+            insert_at = None
 
-    # Compute event step indices for close/open (at end of segment 2 and 5 respectively)
+    # Helper: end idx of segment k in the (possibly extended) path
     def end_of_segment(seg_idx: int) -> int:
-        # sum of lengths of segments up to and including seg_idx
         end = 0
         for k in range(seg_idx + 1):
             end += per_seg_paths[k].shape[0]
             if k == grasp_seg_idx:
-                end += dwell_added  # dwell inserted here
+                end += dwell_added
         return max(0, end - 1)
 
-    events = {
-        "close_step": end_of_segment(2),  # after grasp
-        "open_step":  end_of_segment(5),  # after place
-    }
-    return path, events
+    # Fire CLOSE **mid-dwell** so it's clearly after arrival & stationary
+    if insert_at is not None:
+        close_step = insert_at + max(0, dwell_steps // 2)
+    else:
+        close_step = end_of_segment(0)  # fallback
 
+    # Fire OPEN after finishing segment 3 (preplace->place)
+    open_step = end_of_segment(3)
+
+    events = {"close_step": int(close_step), "open_step": int(open_step)}
+    return path, events
 
 # ------------------------- Helpers/Types ------------------------
 
@@ -402,7 +408,7 @@ def prepare_env(args):
 
 def get_path(robot, ee, _cube, motors_dof_idx):
     # 1) Ensure gripper open
-    set_gripper(robot, open_frac=1.0)
+    # set_gripper(robot, open_frac=1.0)
 
     # 2) Fix EE orientation (keep current wrist orientation, which should be tool-z vertical)
     ee_quat_wxyz = ee.get_quat().cpu().numpy()[0].astype(np.float32)
@@ -494,36 +500,43 @@ def main():
     for i in range(total_steps):
         try:
             q_cmd = path[i]
-            robot.control_dofs_position(q_cmd)
+            robot.control_dofs_position(
+                q_cmd[motors_dof_idx],
+                dofs_idx_local=motors_dof_idx
+            )
             last_cmd = q_cmd
         except Exception:
-            robot.control_dofs_position(last_cmd)
+            robot.control_dofs_position(
+                last_cmd[motors_dof_idx],
+                dofs_idx_local=motors_dof_idx
+            )
+
+        # --- gripper events BEFORE stepping ---
+        # TODO: make the logic proper
+        if step == open_step:
+            set_gripper(robot, open_frac=0.0)
+        elif step == close_step:
+            set_gripper(robot, open_frac=1.0)
 
         scene.step()
 
-        # --- timed gripper events (trigger exactly once) ---
-        if step == close_step:
-            set_gripper(robot, open_frac=0.0)  # close at grasp
-        if step == open_step:
-            set_gripper(robot, open_frac=1.0)  # open at place
-
-        t += dt
-        step += 1
-
+        # ★ log at current t (post-step), then advance time
         add_to_logger(logger, robot, ee, motors_dof_idx, t, q_cmd)
+        t += dt  # ★ moved after logging
 
-        # Update camera pose to follow wrist
+        # Camera follow & capture
         if cam is not None:
             cam.move_to_attach()
-
-            if step % cam_every == 0:
-                rgb, _, _, _ = cam.render()  # returns RGB (HxWx3 or HxWx4 float/uint8)
+            if cam_every and (i % cam_every == 0):  # ★ use i for stable cadence
+                rgb, _, _, _ = cam.render()
                 rgb = np.asarray(rgb)
                 if rgb.dtype != np.uint8:
                     rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
                 if rgb.shape[-1] == 4:
                     rgb = rgb[..., :3]
                 logger.log_image(rgb)
+
+        step += 1  # ★ move to the end (optional but tidy)
 
     out_path = logger.save()
     print(f"Saved Rerun recording: {out_path}")
