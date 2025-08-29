@@ -37,7 +37,7 @@ from typing import List, Optional, Tuple
 HOVER_IN   = 0.8   # pre-grasp / pre-place hover height above surface [m]
 HOVER_OUT  = 0.8   # post-grasp / post-place retreat height [m]
 MARGIN_Z   = 0.28  # how close to the top surface we descend before closing/opening [m]
-DWELL_STEPS = 12    # small hold after closing before lifting (lets contacts settle)
+DWELL_STEPS = 5    # small hold after closing before lifting (lets contacts settle)
 STEPS_PER_SEGMENT = 120  # IK interpolation per segment (approach/lift/place)
 HOME_QPOSE = np.array([math.pi/2, -math.pi/2, math.pi/2, -math.pi/2, -math.pi/2, 0], dtype=np.float32)
 
@@ -145,7 +145,7 @@ def make_pick_place_waypoints(cube_pos: np.ndarray,
     waypoints_xyz: List[np.ndarray] = [
         pregrasp,          # 1 approach above cube (open)
         grasp,             # 2 descend near top (open)
-        *([grasp] * 1),    # 3 tiny segment to ensure a clean "close" event while stationary
+        *([grasp] * dwell_steps),    # 3 tiny segment to ensure a clean "close" event while stationary
         postgrasp,         # 4 lift (closed)
         preplace,          # 5 travel above place (closed)
         place,             # 6 descend near top (closed)
