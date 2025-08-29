@@ -53,6 +53,75 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+# -------- Gripper helpers (best-effort for Robotiq 2F) --------
+
+def get_driver_dof_indices(robot):
+    idx = []
+    for j in robot.joints:
+        if j.name in ["left_driver_joint", "right_driver_joint"]:
+            idx.append(int(j.dofs_idx_local[0]))
+    if not idx:
+        raise RuntimeError("Driver joints not found")
+    return idx
+
+def set_gripper(robot, open_frac: float):
+    open_frac = float(np.clip(open_frac, 0.0, 1.0))
+    idxs = get_driver_dof_indices(robot)
+    q = [open_frac] * len(idxs)   # symmetric opening
+    robot.control_dofs_position(np.array(q, dtype=np.float32), dofs_idx_local=idxs)
+
+# -------- IK path builder over Cartesian waypoints --------
+def cartesian_waypoint_path(robot, ee, waypoints_xyz: List[np.ndarray],
+                            quat_wxyz: Optional[np.ndarray],
+                            steps_per_segment: int = 60) -> np.ndarray:
+    """
+    Sequential IK to follow Cartesian points with (optional) fixed orientation.
+    Returns a (N, ndof) numpy array of joint configs.
+    """
+    path = []
+    q_curr = robot.get_dofs_position()[0]  # current full dofs (actuated)
+    for i in range(len(waypoints_xyz) - 1):
+        a = waypoints_xyz[i]
+        b = waypoints_xyz[i + 1]
+        for s in range(steps_per_segment):
+            u = (s + 1) / steps_per_segment
+            p = (1 - u) * a + u * b
+            if quat_wxyz is not None:
+                qpos = robot.inverse_kinematics(link=ee, pos=p[None, :], quat=quat_wxyz[None, :])
+            else:
+                qpos = robot.inverse_kinematics(link=ee, pos=p[None, :])
+            if qpos is None:
+                # keep last known pose if IK fails momentarily
+                qnext = q_curr
+            else:
+                qnext = qpos[0].cpu().numpy()
+                q_curr = qnext
+            path.append(qnext)
+    return np.asarray(path, dtype=np.float32)
+
+
+def make_pick_place_waypoints(cube_pos: np.ndarray,
+                              place_xyz: np.ndarray,
+                              hover_h: float = 0.15) -> List[np.ndarray]:
+    """
+    Cartesian waypoints around grasp and place.
+    """
+    grasp_xyz = cube_pos.copy()
+    grasp_xyz[2] += 0.035  # top of cube (half size)
+    pregrasp = grasp_xyz + np.array([0.0, 0.0, hover_h], np.float32)
+
+    preplace = place_xyz + np.array([0.0, 0.0, hover_h], np.float32)
+
+    return [
+        pregrasp,     # approach from above
+        grasp_xyz,    # descend to contact
+        pregrasp,     # lift back to hover (after closing)
+        preplace,     # move above place
+        place_xyz,    # descend for place
+        preplace,     # retreat up
+    ]
+
+
 # ------------------------- Helpers/Types ------------------------
 
 UR10E_JOINTS = (
@@ -90,32 +159,30 @@ def find_motors_idx(robot, joint_names: Tuple[str, ...]) -> List[int]:
 
 
 def get_gripper_width(robot) -> float:
-    """Best-effort estimate of Robotiq opening width [m]."""
-    candidates = [
-        "finger_joint1", "finger_joint2",
-        "left_inner_finger_joint", "right_inner_finger_joint",
-        "left_outer_knuckle_joint", "right_outer_knuckle_joint",
-        "left_inner_knuckle_joint", "right_inner_knuckle_joint",
-    ]
+    """
+    Estimate Robotiq 2F-85 opening width [m] from driver joint positions.
+    The XML defines 'left_driver_joint' and 'right_driver_joint' as actuated.
+    Their range is 0..0.8 (per joint). Full opening is about 0.085 m.
+    """
     vals = []
-    for name in candidates:
-        try:
-            j = robot.get_joint(name)
-            if j is not None:
-                q = float(j.qpos()) if hasattr(j, "qpos") else float(j.get_qpos())
+    for j in robot.joints:
+        if j.name in ["left_driver_joint", "right_driver_joint"]:
+            try:
+                q = float(j.get_qpos()) if hasattr(j, "get_qpos") else float(j.qpos())
                 vals.append(q)
-        except Exception:
-            pass
+            except Exception:
+                pass
+
     if not vals:
-        try:
-            for j in robot.get_joints():
-                jname = getattr(j, "name", "")
-                if "finger" in jname:
-                    q = float(j.qpos()) if hasattr(j, "qpos") else float(j.get_qpos())
-                    vals.append(q)
-        except Exception:
-            return 0.0
-    return float(np.clip(np.sum(vals), 0.0, 0.14))
+        return 0.0
+
+    # Use the average of the two driver joints
+    avg_q = np.mean(vals)
+
+    # Scale joint value (0..0.8) → physical width (~0..0.085 m for Robotiq 2F-85)
+    width = (avg_q / 0.8) * 0.085
+    return float(np.clip(width, 0.0, 0.085))
+
 
 
 # ------------------------- Rerun Logging ------------------------
@@ -158,95 +225,135 @@ class RerunLogger:
         return path
 
 
+def prepare_env(args):
+        session = args.session or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        logger = RerunLogger(session, args.outdir)
+
+        gs.init(backend=gs.gpu)
+
+        scene = gs.Scene(
+            viewer_options=gs.options.ViewerOptions(
+                camera_pos=(0, -3.5, 2.5),
+                camera_lookat=(0.0, 0.0, 0.5),
+                camera_fov=30,
+                max_FPS=60,
+            ),
+            sim_options=gs.options.SimOptions(dt=args.dt),
+            show_viewer=True,
+        )
+
+        plane = scene.add_entity(gs.morphs.Plane())
+        robot = scene.add_entity(gs.morphs.MJCF(file=args.robot))
+
+        # Cube: center-positioned; set z to half the height so it sits on the plane
+        cube_size = (0.07, 0.07, 0.07)
+        _cube = scene.add_entity(
+            gs.morphs.Box(
+                size=cube_size,                         # (x, y, z) extents in meters
+                pos=(-0.65, -0.5, cube_size[2] / 2.0),  # center position; z = half height
+                fixed=False,                            # dynamic body (not fixed to world)
+                collision=True,                         # participates in collisions
+                visualization=True,                     # render it
+                contype=0xFFFF,
+                conaffinity=0xFFFF,
+                # quat/euler optional; if used, quat is (w, x, y, z)
+            )
+        )
+
+        motors_dof_idx = find_motors_idx(robot, UR10E_JOINTS)
+
+        ee = robot.get_link('wrist_3_link')
+        if ee is None:
+            raise RuntimeError("End-effector link 'wrist_3_link' not found; adjust name to your MJCF")
+
+        # Free camera that will follow the wrist if enabled
+        cam = None
+        if args.add_camera:
+            try:
+                cam = scene.add_camera(
+                    res=tuple(args.cam_res),
+                    pos=(0.0, 0.0, 1.0),
+                    lookat=(0.0, 0.0, 0.0),
+                    # fov=40,
+                    GUI=False,
+                )
+
+                # Build an offset transform: translation + rotation relative to link
+                offset_T = np.eye(4, dtype=np.float32)
+                offset_T[:3, 3] = np.array([-0.5, 0.0, 0.5], dtype=np.float32) 
+
+                # rotation: tilt down around X-axis by 45°
+                theta = np.deg2rad(-25)  # negative = look downward
+                R_x = np.array([
+                    [1, 0, 0],
+                    [0, np.cos(theta), -np.sin(theta)],
+                    [0, np.sin(theta),  np.cos(theta)]
+                ], dtype=np.float32)
+
+                offset_T[:3, :3] = R_x
+
+                cam.attach(ee, offset_T)
+            except Exception as e:
+                print(f"[WARN] Camera creation failed: {e}")
+                cam = None
+
+        scene.build(n_envs=1) # TODO: n_envs > 1 is not tested
+        
+        home_qpos = np.array([0, -math.pi/2, math.pi/2, -math.pi/2, -math.pi/2, 0], dtype=np.float32)
+        robot.set_dofs_position(home_qpos, motors_dof_idx)
+
+        return scene, robot, ee, _cube, home_qpos, motors_dof_idx, logger, cam
+
+def get_path(args, robot, ee, _cube):
+    if args.traj is not None:
+        path = load_csv_traj(args.traj)
+    else:
+        # 1) Open gripper
+        set_gripper(robot, open_frac=1.0)
+
+        # 2) Fix EE orientation (keep whatever current wrist orientation is)
+        ee_quat_wxyz = ee.get_quat().cpu().numpy()[0]
+        quat_wxyz = ee_quat_wxyz.astype(np.float32)
+
+        # 3) Current cube position (center)
+        cube_pos = _cube.get_pos().cpu().numpy()[0].astype(np.float32)
+
+        # 4) Choose a place target (to the right side of robot, on table)
+        place_xyz = np.array([ -0.30, 0.40, 0.035], dtype=np.float32)
+
+        # 5) Build Cartesian waypoints
+        waypoints = make_pick_place_waypoints(cube_pos, place_xyz, hover_h=0.18)
+
+        # 6) Convert waypoints to a joint-space trajectory with IK
+        path = cartesian_waypoint_path(robot, ee, waypoints, quat_wxyz=quat_wxyz, steps_per_segment=90)
+
+    return path
+
+
+def add_to_logger(logger, robot, ee, motors_dof_idx, t, q_cmd):
+    q = robot.get_dofs_position(dofs_idx_local=motors_dof_idx)[0]
+    dq = robot.get_dofs_velocity(dofs_idx_local=motors_dof_idx)[0]
+
+    ee_pos = ee.get_pos().cpu().numpy()[0]
+    ee_quat_wxyz = ee.get_quat().cpu().numpy()[0]
+    ee_quat = np.array([ee_quat_wxyz[1], ee_quat_wxyz[2], ee_quat_wxyz[3], ee_quat_wxyz[0]], dtype=np.float32)
+
+    width_m = get_gripper_width(robot)
+
+    logger.set_time(t)
+    logger.log_joint_state(q, dq)
+    logger.log_cmd(q_cmd)
+    logger.log_gripper(width_m)
+    logger.log_ee(ee_pos, ee_quat)
+
 # --------------------------- Main -------------------------------
 
 def main():
     args = parse_args()
 
-    session = args.session or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    logger = RerunLogger(session, args.outdir)
+    scene, robot, ee, _cube, home_qpos, motors_dof_idx, logger, cam = prepare_env(args=args)
 
-    gs.init(backend=gs.gpu)
-
-    scene = gs.Scene(
-        viewer_options=gs.options.ViewerOptions(
-            camera_pos=(0, -3.5, 2.5),
-            camera_lookat=(0.0, 0.0, 0.5),
-            camera_fov=30,
-            max_FPS=60,
-        ),
-        sim_options=gs.options.SimOptions(dt=args.dt),
-        show_viewer=True,
-    )
-
-    plane = scene.add_entity(gs.morphs.Plane())
-    robot = scene.add_entity(gs.morphs.MJCF(file=args.robot))
-
-    # Cube: center-positioned; set z to half the height so it sits on the plane
-    cube_size = (0.07, 0.07, 0.07)
-    cube = scene.add_entity(
-        gs.morphs.Box(
-            size=cube_size,                         # (x, y, z) extents in meters
-            pos=(-0.65, -0.5, cube_size[2] / 2.0),  # center position; z = half height
-            fixed=False,                            # dynamic body (not fixed to world)
-            collision=True,                         # participates in collisions
-            visualization=True,                     # render it
-            contype=0xFFFF,
-            conaffinity=0xFFFF,
-            # quat/euler optional; if used, quat is (w, x, y, z)
-        )
-    )
-
-    motors_dof_idx = find_motors_idx(robot, UR10E_JOINTS)
-
-    ee = robot.get_link('wrist_3_link')
-    if ee is None:
-        raise RuntimeError("End-effector link 'wrist_3_link' not found; adjust name to your MJCF")
-
-    # Free camera that will follow the wrist if enabled
-    cam = None
-    if args.add_camera:
-        try:
-            cam = scene.add_camera(
-                res=tuple(args.cam_res),
-                pos=(0.0, 0.0, 1.0),
-                lookat=(0.0, 0.0, 0.0),
-                # fov=40,
-                GUI=False,
-            )
-
-            # Build an offset transform: translation + rotation relative to link
-            offset_T = np.eye(4, dtype=np.float32)
-            offset_T[:3, 3] = np.array([-0.5, 0.0, 0.5], dtype=np.float32) 
-
-            # rotation: tilt down around X-axis by 45°
-            theta = np.deg2rad(-25)  # negative = look downward
-            R_x = np.array([
-                [1, 0, 0],
-                [0, np.cos(theta), -np.sin(theta)],
-                [0, np.sin(theta),  np.cos(theta)]
-            ], dtype=np.float32)
-
-            offset_T[:3, :3] = R_x
-
-            cam.attach(ee, offset_T)
-        except Exception as e:
-            print(f"[WARN] Camera creation failed: {e}")
-            cam = None
-
-    scene.build(n_envs=1) # TODO: n_envs > 1 is not tested
-    
-    home_qpos = np.array([0, -math.pi/2, math.pi/2, -math.pi/2, -math.pi/2, 0], dtype=np.float32)
-    robot.set_dofs_position(home_qpos, motors_dof_idx)
-    
-    if args.traj is not None:
-        path = load_csv_traj(args.traj)
-    else:
-        q_goal = robot.inverse_kinematics(link=ee, pos=np.array([[-0.65, -0.5, 0.5]], dtype=np.float32))
-        path = robot.plan_path(qpos_goal=q_goal)
-        if path is None or len(path) == 0:
-            raise RuntimeError("Path planning failed; provide --traj CSV instead.")
-        path = path.cpu().numpy()
+    path = get_path(args, robot, ee, _cube)
     
     dt = float(scene.sim_options.dt)
     t = 0.0
@@ -259,33 +366,36 @@ def main():
     if args.duration is not None:
         total_steps = min(total_steps, int(round(args.duration / dt)))
 
+    # Event indices (aligned with the 6 waypoints × steps_per_segment in builder above)
+    steps_per_segment = 90  # must match cartesian_waypoint_path()
+    pre_grasp_end  = steps_per_segment - 1
+    grasp_end      = 2*steps_per_segment - 1
+    lift_end       = 3*steps_per_segment - 1
+    pre_place_end  = 4*steps_per_segment - 1
+    place_end      = 5*steps_per_segment - 1
+    
     for i in range(total_steps):
         try:
             q_cmd = path[i]
             robot.control_dofs_position(q_cmd)
             last_cmd = q_cmd
         except Exception:
-            q_cmd = last_cmd
-            robot.control_dofs_position(q_cmd)
+            robot.control_dofs_position(last_cmd)
 
         scene.step()
+
+        # --- timed gripper events ---
+        if i == grasp_end:
+            # Close at contact
+            set_gripper(robot, open_frac=0.0)
+        if i == place_end:
+            # Open to release
+            set_gripper(robot, open_frac=1.0)
+
         t += dt
         step += 1
 
-        q = robot.get_dofs_position(dofs_idx_local=motors_dof_idx)[0]
-        dq = robot.get_dofs_velocity(dofs_idx_local=motors_dof_idx)[0]
-
-        ee_pos = ee.get_pos().cpu().numpy()[0]
-        ee_quat_wxyz = ee.get_quat().cpu().numpy()[0]
-        ee_quat = np.array([ee_quat_wxyz[1], ee_quat_wxyz[2], ee_quat_wxyz[3], ee_quat_wxyz[0]], dtype=np.float32)
-
-        width_m = get_gripper_width(robot)
-
-        logger.set_time(t)
-        logger.log_joint_state(q, dq)
-        logger.log_cmd(q_cmd)
-        logger.log_gripper(width_m)
-        logger.log_ee(ee_pos, ee_quat)
+        add_to_logger(logger, robot, ee, motors_dof_idx, t, q_cmd)
 
         # Update camera pose to follow wrist
         if cam is not None:
