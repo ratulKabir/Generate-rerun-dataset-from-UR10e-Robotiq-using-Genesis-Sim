@@ -22,11 +22,13 @@ Notes:
 """
 from __future__ import annotations
 import argparse
-import numpy as np
 
 from configs.configs import load_config
 from utils.rerun_utils import add_to_logger
-from utils.utils import prepare_env, manipulate_robot, get_path
+from utils.utils import (prepare_env, 
+                         manipulate_robot, 
+                         get_path, 
+                         cam_follow_arm_and_log)
 
 # ----------------------------- CLI -----------------------------
 
@@ -79,20 +81,10 @@ def main():
         t += dt  # ★ moved after logging
 
         # Camera follow & capture
-        if cam is not None:
-            cam.move_to_attach()
-            if cam_every and (i % cam_every == 0):  # ★ use i for stable cadence
-                rgb, _, _, _ = cam.render()
-                rgb = np.asarray(rgb)
-                if rgb.dtype != np.uint8:
-                    rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-                if rgb.shape[-1] == 4:
-                    rgb = rgb[..., :3]
-                logger.log_image(rgb)
+        cam_follow_arm_and_log(cam_every, cam, logger, i)
 
     out_path = logger.save()
     print(f"Saved Rerun recording: {out_path}")
-
 
 if __name__ == "__main__":
     main()

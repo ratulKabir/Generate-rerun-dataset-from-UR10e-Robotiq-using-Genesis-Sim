@@ -6,7 +6,15 @@ from typing import List, Optional, Tuple
 
 from utils.rerun_utils import RerunLogger
 
-# -------- Gripper helpers (best-effort for Robotiq 2F) --------
+
+UR10E_JOINTS = (
+    "shoulder_pan_joint",
+    "shoulder_lift_joint",
+    "elbow_joint",
+    "wrist_1_joint",
+    "wrist_2_joint",
+    "wrist_3_joint",
+)
 
 def get_driver_dof_indices(robot):
     idx = []
@@ -169,17 +177,6 @@ def build_pick_place_joint_path(robot, ee,
     events = {"close_step": int(close_step), "open_step": int(open_step)}
     return path, events
 
-# ------------------------- Helpers/Types ------------------------
-
-UR10E_JOINTS = (
-    "shoulder_pan_joint",
-    "shoulder_lift_joint",
-    "elbow_joint",
-    "wrist_1_joint",
-    "wrist_2_joint",
-    "wrist_3_joint",
-)
-
 
 def load_csv_traj(path: str) -> np.ndarray:
     rows: List[List[float]] = []
@@ -309,3 +306,15 @@ def manipulate_robot(robot, path, step, motors_dof_idx, events):
         set_gripper(robot, open_frac=1.0)
 
     return q_cmd
+
+def cam_follow_arm_and_log(cam_every, cam, logger, idx):
+    if cam is not None:
+        cam.move_to_attach()
+        if cam_every and (idx % cam_every == 0):  # ★ use i for stable cadence
+            rgb, _, _, _ = cam.render()
+            rgb = np.asarray(rgb)
+            if rgb.dtype != np.uint8:
+                rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+            if rgb.shape[-1] == 4:
+                rgb = rgb[..., :3]
+            logger.log_image(rgb)
