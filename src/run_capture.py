@@ -32,32 +32,31 @@ import genesis as gs
 from datetime import datetime
 from typing import List, Optional, Tuple
 
+from configs.configs import load_config
+
 
 # --- Pick & place tuning params ---
-HOVER_IN   = 0.8   # pre-grasp / pre-place hover height above surface [m]
-HOVER_OUT  = 0.8   # post-grasp / post-place retreat height [m]
-MARGIN_Z   = 0.28  # how close to the top surface we descend before closing/opening [m]
-DWELL_STEPS = 50    # small hold after closing before lifting (lets contacts settle)
-STEPS_PER_SEGMENT = 150  # IK interpolation per segment (approach/lift/place)
-HOME_QPOSE = np.array([math.pi/2, -math.pi/2, math.pi/2, -math.pi/2, -math.pi/2, 0], dtype=np.float32)
+# HOVER_IN   = 0.8   # pre-grasp / pre-place hover height above surface [m]
+# HOVER_OUT  = 0.8   # post-grasp / post-place retreat height [m]
+# MARGIN_Z   = 0.28  # how close to the top surface we descend before closing/opening [m]
+# DWELL_STEPS = 50    # small hold after closing before lifting (lets contacts settle)
+# STEPS_PER_SEGMENT = 150  # IK interpolation per segment (approach/lift/place)
+# HOME_QPOSE = np.array([math.pi/2, -math.pi/2, math.pi/2, -math.pi/2, -math.pi/2, 0], dtype=np.float32)
 
 # ----------------------------- CLI -----------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Genesis UR10e + Robotiq → Rerun capture")
-    p.add_argument("--robot", default="./assets/xml/universal_robots_ur10e/ur10e_robotiq.xml",
-                   help="Path to MJCF/XML robot (UR10e + Robotiq)")
-    p.add_argument("--traj", default=None,
-                   help="Optional CSV of joint targets (columns: 6 joint angles in rad)")
-    p.add_argument("--outdir", default="outputs/dataset", help="Output directory for .rrd")
-    p.add_argument("--session", default=None, help="Override session name (without .rrd)")
-    p.add_argument("--dt", type=float, default=0.01, help="Physics timestep [s]")
-    p.add_argument("--add-camera", default=True, action="store_true", help="Attach an RGB camera and log frames")
-    p.add_argument("--cam-fps", type=float, default=30.0, help="Target camera FPS (approx)")
-    p.add_argument("--cam-res", type=int, nargs=2, default=[640, 480], metavar=("W","H"),
-                   help="Camera resolution WxH")
-    p.add_argument("--duration", type=float, default=None,
-                   help="Optional max duration [s] (overrides trajectory length)")
+    p = argparse.ArgumentParser("Genesis UR10e + Robotiq → Rerun capture")
+    p.add_argument("--config", default="./src/configs/default.yaml", help="YAML with params")
+    # optional overrides (null = keep YAML):
+    p.add_argument("--duration", type=float, default=None)
+    p.add_argument("--add-camera", dest="add_camera", action="store_true")
+    p.add_argument("--no-add-camera", dest="add_camera", action="store_false")
+    p.set_defaults(add_camera=None)  # so None means “no override”
+    p.add_argument("--outdir", default=None)
+    p.add_argument("--session", default=None)
+    p.add_argument("--robot", dest="robot_xml", default=None)
+    p.add_argument("--dt", type=float, default=None)
     return p.parse_args()
 
 # -------- Gripper helpers (best-effort for Robotiq 2F) --------
@@ -109,10 +108,9 @@ def cartesian_waypoint_path(robot, ee, waypoints_xyz: List[np.ndarray],
 
 def make_pick_place_waypoints(cube_pos: np.ndarray,
                               place_xyz: np.ndarray,
-                              hover_in: float = HOVER_IN,
-                              hover_out: float = HOVER_OUT,
-                              margin_z: float = MARGIN_Z,
-                              dwell_steps: int = DWELL_STEPS) -> Tuple[List[np.ndarray], List[int]]:
+                              hover_in: float,
+                              hover_out: float,
+                              margin_z: float) -> Tuple[List[np.ndarray], List[int]]:
     """
     Build Cartesian waypoints (EE positions) for:
       1) pregrasp (hover above cube, open)
@@ -163,8 +161,8 @@ def make_pick_place_waypoints(cube_pos: np.ndarray,
 def build_pick_place_joint_path(robot, ee,
                                 waypoints_xyz: List[np.ndarray],
                                 quat_wxyz: Optional[np.ndarray],
-                                steps_per_segment: int = STEPS_PER_SEGMENT,
-                                dwell_steps: int = DWELL_STEPS):
+                                steps_per_segment: int,
+                                dwell_steps: int):
     """
     IK path between waypoints. Adds a dwell AFTER reaching 'grasp' so we can close while stationary.
     Returns:
@@ -326,118 +324,70 @@ class RerunLogger:
         rr.save(path)
         return path
 
+def prepare_env(cfg):
+    session = cfg.session or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    logger = RerunLogger(session, cfg.outdir)
+    gs.init(backend=gs.gpu)
 
-def prepare_env(args):
-        session = args.session or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        logger = RerunLogger(session, args.outdir)
-
-        gs.init(backend=gs.gpu)
-
-        scene = gs.Scene(
-            viewer_options=gs.options.ViewerOptions(
-                camera_pos=(0, -3.5, 2.5),
-                camera_lookat=(0.0, 0.0, 0.5),
-                camera_fov=30,
-                max_FPS=60,
-            ),
-            sim_options=gs.options.SimOptions(dt=args.dt),
-            show_viewer=True,
-        )
-
-        plane = scene.add_entity(gs.morphs.Plane())
-        robot = scene.add_entity(gs.morphs.MJCF(file=args.robot))
-
-        # Cube: center-positioned; set z to half the height so it sits on the plane
-        cube_size = (0.1, 0.04, 0.05)
-        _cube = scene.add_entity(
-            gs.morphs.Box(
-                size=cube_size,                         # (x, y, z) extents in meters
-                pos=(-0.65, -0.5, cube_size[2] / 2.0),  # center position; z = half height
-                fixed=False,                            # dynamic body (not fixed to world)
-                collision=True,                         # participates in collisions
-                visualization=True,                     # render it
-                contype=0xFFFF,
-                conaffinity=0xFFFF,
-                # quat/euler optional; if used, quat is (w, x, y, z)
-            )
-        )
-
-        motors_dof_idx = find_motors_idx(robot, UR10E_JOINTS)
-
-        ee = robot.get_link('wrist_3_link')
-        if ee is None:
-            raise RuntimeError("End-effector link 'wrist_3_link' not found; adjust name to your MJCF")
-
-        # Free camera that will follow the wrist if enabled
-        cam = None
-        if args.add_camera:
-            try:
-                cam = scene.add_camera(
-                    res=tuple(args.cam_res),
-                    pos=(0.0, 0.0, 0.0),
-                    lookat=(0.0, 0.0, 0.0),
-                    fov=50,
-                    GUI=False,
-                )
-
-                # Build an offset transform: translation + rotation relative to link
-                offset_T = np.eye(4, dtype=np.float32)
-                offset_T[:3, 3] = np.array([0.0, 0.0, 0.2], dtype=np.float32) 
-
-                # rotation: tilt down around X-axis
-                theta = np.deg2rad(60)  
-                R_x = np.array([
-                    [1, 0, 0],
-                    [0, np.cos(theta), -np.sin(theta)],
-                    [0, np.sin(theta),  np.cos(theta)]
-                ], dtype=np.float32)
-
-                offset_T[:3, :3] = R_x
-
-                cam.attach(ee, offset_T)
-            except Exception as e:
-                print(f"[WARN] Camera creation failed: {e}")
-                cam = None
-
-        scene.build(n_envs=1) # TODO: n_envs > 1 is not tested
-        
-        home_qpos = HOME_QPOSE
-        robot.set_dofs_position(home_qpos, motors_dof_idx)
-
-        return scene, robot, ee, _cube, home_qpos, motors_dof_idx, logger, cam
-
-def get_path(robot, ee, _cube, motors_dof_idx):
-    # 1) Ensure gripper open
-    set_gripper(robot, open_frac=0.0)
-
-    # 2) Fix EE orientation (keep current wrist orientation, which should be tool-z vertical)
-    ee_quat_wxyz = ee.get_quat().cpu().numpy()[0].astype(np.float32)
-
-    # 3) Cube & place
-    cube_pos = _cube.get_pos().cpu().numpy()[0].astype(np.float32)
-    place_xyz = np.array([-0.30, 0.40, 0.035], dtype=np.float32)  # top surface target
-
-    # 4) Waypoints for full pick-and-place
-    waypoints_xyz, seg_events = make_pick_place_waypoints(
-        cube_pos=cube_pos,
-        place_xyz=place_xyz,
-        hover_in=HOVER_IN,
-        hover_out=HOVER_OUT,
-        margin_z=MARGIN_Z,
-        dwell_steps=DWELL_STEPS,
+    scene = gs.Scene(
+        viewer_options=gs.options.ViewerOptions(
+            camera_pos=(0, -3.5, 2.5), 
+            camera_lookat=(0.0, 0.0, 0.5), 
+            camera_fov=30, 
+            max_FPS=60,
+        ),
+        sim_options=gs.options.SimOptions(dt=cfg.dt),
+        show_viewer=(not cfg.headless),
     )
 
-    # 5) Path for those segments (+ dwell) and event steps
+    plane = scene.add_entity(gs.morphs.Plane())
+    robot = scene.add_entity(gs.morphs.MJCF(file=cfg.robot_xml))
+
+    cube_z = cfg.cube_size[2] / 2.0
+    cube = scene.add_entity(gs.morphs.Box(
+        size=tuple(cfg.cube_size),
+        pos=(cfg.cube_pos[0], cfg.cube_pos[1], cube_z),
+        fixed=False, collision=True, visualization=True, contype=0xFFFF, conaffinity=0xFFFF
+    ))
+
+    motors_idx = find_motors_idx(robot, UR10E_JOINTS)
+    ee = robot.get_link('wrist_3_link')
+
+    cam = None
+    if cfg.add_camera:
+        cam = scene.add_camera(res=tuple(cfg.cam_res), pos=(0,0,0), lookat=(0,0,0), fov=50, GUI=False)
+        # offset
+        offset_T = np.eye(4, dtype=np.float32)
+        offset_T[:3, 3] = np.array(cfg.cam_offset_xyz, dtype=np.float32)
+        th = np.deg2rad(cfg.cam_tilt_deg)
+        R_x = np.array([[1,0,0],[0,np.cos(th),-np.sin(th)],[0,np.sin(th),np.cos(th)]], dtype=np.float32)
+        offset_T[:3, :3] = R_x
+        cam.attach(ee, offset_T)
+
+    scene.build(n_envs=1)
+    robot.set_dofs_position(np.array(cfg.home_qpose, dtype=np.float32), motors_idx)
+    return scene, robot, ee, cube, np.array(cfg.home_qpose, np.float32), motors_idx, logger, cam
+
+def get_path(cfg, robot, ee, cube, motors_dof_idx):
+    set_gripper(robot, open_frac=0.0)
+    ee_quat_wxyz = ee.get_quat().cpu().numpy()[0].astype(np.float32)
+
+    cube_pos = cube.get_pos().cpu().numpy()[0].astype(np.float32)
+    place_xyz = np.array(cfg.place_xyz, dtype=np.float32)
+
+    waypoints_xyz, _ = make_pick_place_waypoints(
+        cube_pos=cube_pos, place_xyz=place_xyz,
+        hover_in=cfg.hover_in, hover_out=cfg.hover_out,
+        margin_z=cfg.margin_z
+    )
+
     path, events = build_pick_place_joint_path(
-        robot, ee,
-        waypoints_xyz=waypoints_xyz,
-        quat_wxyz=ee_quat_wxyz,
-        steps_per_segment=STEPS_PER_SEGMENT,
-        dwell_steps=DWELL_STEPS,
+        robot, ee, waypoints_xyz=waypoints_xyz, quat_wxyz=ee_quat_wxyz,
+        steps_per_segment=cfg.steps_per_segment, dwell_steps=cfg.dwell_steps,
     )
 
     # 6) Append a return-to-home at the end
-    home_qpos = HOME_QPOSE
+    home_qpos = cfg.home_qpose
 
     tail = []
     if path.shape[0] > 0:
@@ -452,7 +402,6 @@ def get_path(robot, ee, _cube, motors_dof_idx):
 
     if tail:
         path = np.concatenate([path, np.asarray(tail, dtype=np.float32)], axis=0)
-
 
     return path, events
 
@@ -478,15 +427,23 @@ def add_to_logger(logger, robot, ee, motors_dof_idx, t, q_cmd):
 
 def main():
     args = parse_args()
+    cli_overrides = {
+        "duration": args.duration,
+        "add_camera": args.add_camera,
+        "outdir": args.outdir,
+        "session": args.session,
+        "robot_xml": args.robot_xml,
+        "dt": args.dt,
+    }
+    cfg = load_config(args.config, cli_overrides)
 
-    scene, robot, ee, _cube, home_qpos, motors_dof_idx, logger, cam = prepare_env(args=args)
-
-    path, events = get_path(robot, ee, _cube, motors_dof_idx)
+    scene, robot, ee, cube, home_qpos, motors_dof_idx, logger, cam = prepare_env(cfg)
+    path, events = get_path(cfg, robot, ee, cube, motors_dof_idx)
     
     dt = float(scene.sim_options.dt)
     t = 0.0
     step = 0
-    cam_every = max(1, int(round(1.0 / (dt * max(1e-9, args.cam_fps))))) if (args.add_camera and cam is not None) else 0
+    cam_every = max(1, int(round(1.0 / (dt * max(1e-9, cfg.cam_fps))))) if (cfg.add_camera and cam is not None) else 0
 
     last_cmd = home_qpos.copy()
 
