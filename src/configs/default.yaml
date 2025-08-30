@@ -1,0 +1,44 @@
+# configs/default.yaml
+
+# Files / session
+outdir: "outputs/dataset"
+session: null            # if null, auto: session_<YYYYMMDD_HHMMSS>.rrd
+
+# Simulation
+dt: 0.01                 # physics timestep [s]
+duration: null           # max duration [s]; null = full traj
+headless: false          # set true to hide viewer
+
+# Robot
+robot_xml: "./assets/xml/universal_robots_ur10e/ur10e_robotiq.xml"
+home_qpose: [1.5707963, -1.5707963, 1.5707963, -1.5707963, -1.5707963, 0.0]
+
+# Pick & place (meters & steps)
+hover_in: 0.8
+hover_out: 0.8
+margin_z: 0.28
+dwell_steps: 50
+steps_per_segment: 150
+
+# Camera
+add_camera: true
+cam_fps: 30.0
+cam_res: [640, 480]
+cam_tilt_deg: 60         # wrist cam tilt about X (down)
+cam_offset_xyz: [0.0, 0.0, 0.2]
+
+# Cube
+cube_size: [0.1, 0.04, 0.05]  # (x, y, z)
+cube_pos:  [-0.65, -0.5, 0.0] # center XY; z will be set to half height
+
+# Place target
+place_xyz: [-0.30, 0.40, 0.035]
+
+# Logging
+streams:
+  - robot/state/q
+  - robot/state/dq
+  - commands/q_target
+  - gripper/state/width
+  - world/ee
+  - cam/rgb
