@@ -57,6 +57,7 @@ def parse_args() -> argparse.Namespace:
     # optional overrides (null = keep YAML):
     p.add_argument("--duration", type=float, default=None)
     p.add_argument("--add-camera", dest="add_camera", action="store_true")
+    p.set_defaults(add_camera=None)  # so None means “no override”
     p.add_argument("--no-add-camera", dest="add_camera", action="store_false")
     p.add_argument("--outdir", default=None)
     p.add_argument("--session", default=None)
