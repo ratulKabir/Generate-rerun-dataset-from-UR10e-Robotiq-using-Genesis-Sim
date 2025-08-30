@@ -1,25 +1,44 @@
 #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Run a Genesis simulation of UR10e + Robotiq, execute a simple trajectory,
-log synchronized streams to Rerun, and save a single .rrd file.
+Generate a Rerun dataset from a Genesis simulation of **UR10e + Robotiq 2F**.
 
-Usage examples:
-  python run_capture.py \
-    --robot xml/universal_robots_ur10e/ur10e_robotiq.xml \
-    --outdir outputs/dataset \
-    --add-camera \
-    --cam-fps 30
+This script:
+  • Spawns a UR10e with a Robotiq gripper in Genesis
+  • Runs a smooth pick-and-place trajectory (IK over Cartesian waypoints)
+  • Logs synchronized streams to Rerun using **simulation time** as the single clock
+  • Exports a single `.rrd` file for clean, replayable visualization
 
-  python run_capture.py --traj configs/sample_traj.csv
+Configuration:
+  • YAML-first at `src/configs/default.yaml` (robot XML, dt, camera, waypoints, etc.)
+  • CLI overrides take precedence over YAML (see examples below)
 
-Outputs:
-  dataset/session_<YYYYMMDD_HHMMSS>.rrd
+Logged streams (namespaces):
+  • robot/state/q           — 6-DoF joint positions (Tensor[f32,6])
+  • robot/state/dq          — 6-DoF joint velocities (Tensor[f32,6])
+  • commands/q_target       — commanded 6-DoF joint targets
+  • world/ee                — EE pose (Transform3D)
+  • gripper/state/width     — Robotiq opening width [m]
+  • cam/rgb (optional)      — RGB frames at cfg.cam_fps
+
+Output:
+  • <outdir>/session_<YYYYMMDD_HHMMSS>.rrd
+
+Usage examples (from repo root):
+  # Use YAML defaults
+  python src/run_capture.py --config src/configs/default.yaml
+
+  # Override some params without editing YAML
+  python src/run_capture.py --config src/configs/default.yaml --duration 90 --no-add-camera
+
+  # Swap robot XML or timestep
+  python src/run_capture.py --robot ./assets/xml/universal_robots_ur10e/ur10e_robotiq.xml --dt 0.005
 
 Notes:
-- Uses simulation time as the only clock.
-- Logs: joint q/dq, target commands, EE pose, gripper width, optional RGB.
-- Camera is optional; if unavailable in your Genesis build, disable --add-camera.
+  • The camera is optional; disable via YAML (add_camera: false) or `--no-add-camera`.
+  • Replay with:  rerun viewer <outdir>/session_<timestamp>.rrd
 """
+
 from __future__ import annotations
 import argparse
 
@@ -39,7 +58,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--duration", type=float, default=None)
     p.add_argument("--add-camera", dest="add_camera", action="store_true")
     p.add_argument("--no-add-camera", dest="add_camera", action="store_false")
-    p.set_defaults(add_camera=None)  # so None means “no override”
     p.add_argument("--outdir", default=None)
     p.add_argument("--session", default=None)
     p.add_argument("--robot", dest="robot_xml", default=None)
@@ -78,7 +96,7 @@ def main():
 
         # ★ log at current t (post-step), then advance time
         add_to_logger(logger, robot, ee, motors_dof_idx, t, q_cmd)
-        t += dt  # ★ moved after logging
+        t += dt  # 
 
         # Camera follow & capture
         cam_follow_arm_and_log(cam_every, cam, logger, i)
