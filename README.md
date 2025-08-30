@@ -12,37 +12,65 @@ conda activate genesis-sim-env
 
 To set up the required Python packages, follow these steps **in order**:
 
-1. Install `genesis-world`:
+1. Install `torch` basd on your CUDA version. It's required by Genesis.
+
+2. Install `genesis-world`:
     ```bash
     pip install genesis-world
     ```
 
-2. Install `rerun-sdk`:
+3. Install `rerun-sdk`:
     ```bash
     pip install rerun-sdk
     ```
 
-3. Reinstall `tetgen` (required by genesis, may be affected by rerun):
+4. Reinstall `tetgen` (required by genesis, may be affected by rerun):
     ```bash
     pip install --force-reinstall --no-cache-dir --no-build-isolation --upgrade --no-deps tetgen
     ```
 
-4. Reinstall a compatible version of `numpy` (rerun may install an incompatible version):
+5. Reinstall a compatible version of `numpy` (rerun may install an incompatible version):
     ```bash
     pip install "numpy<2.0" --force-reinstall
     ```
+
+### Library Versions
+
+| Library        | Version      |
+| -------------- | ----------- |
+| `rerun-sdk`    | 0.24.1      |
+| `genesis-world`| 0.2.1       |
+| `numpy`        | 1.26.4      |
+| `tetgen`       | 0.6.7       |
+| `torch`        | 2.6.0+cu124 |
+
 
 > **Note:**  
 > The order is important. Installing `rerun-sdk` may install versions of `numpy` and `tetgen` that are incompatible with `genesis-world`. The last two steps ensure the correct versions are used.
 
 ## Generate and view Rerun dataset
+
 To run this project:
-1. Execute `python src/run_capture.py` to start the data capture. This will save a rerun dataset in the `outputs/dataset` directory. If you use the default settings, you'll see a genesis window with rendering the world and the activities.
-2. To view the generated dataset, use the rerun viewer:
-    `rerun viewer PATH/TO/GENERATE_DATA_FILE.rrd`
-    Replace `PATH/TO/GENERATE_DATA_FILE.rrd` with the actual path to the generated `.rrd` file.
-    <br>View the last recorded rerun file:<br>
-`rerun viewer $(ls -t outputs/dataset/*.rrd | head -n 1)`
+
+1. **Start data capture**  
+    Run the following command to start capturing data. This will save a rerun dataset in the `outputs/dataset` directory. If you use the default settings, you'll see a Genesis window rendering the world and activities.
+
+    ```bash
+    python src/run_capture.py
+    ```
+
+2. **View the generated dataset**  
+    Use the rerun viewer to open the generated `.rrd` file. Replace `PATH/TO/GENERATE_DATA_FILE.rrd` with the actual path to your file:
+
+    ```bash
+    rerun viewer PATH/TO/GENERATE_DATA_FILE.rrd
+    ```
+
+    To quickly view the most recently recorded rerun file, use:
+
+    ```bash
+    rerun viewer $(ls -t outputs/dataset/*.rrd | head -n 1)
+    ```
 
 
 
