@@ -348,7 +348,7 @@ def prepare_env(args):
         robot = scene.add_entity(gs.morphs.MJCF(file=args.robot))
 
         # Cube: center-positioned; set z to half the height so it sits on the plane
-        cube_size = (0.04, 0.04, 0.05)
+        cube_size = (0.1, 0.04, 0.05)
         _cube = scene.add_entity(
             gs.morphs.Box(
                 size=cube_size,                         # (x, y, z) extents in meters
@@ -408,7 +408,7 @@ def prepare_env(args):
 
 def get_path(robot, ee, _cube, motors_dof_idx):
     # 1) Ensure gripper open
-    # set_gripper(robot, open_frac=1.0)
+    set_gripper(robot, open_frac=0.0)
 
     # 2) Fix EE orientation (keep current wrist orientation, which should be tool-z vertical)
     ee_quat_wxyz = ee.get_quat().cpu().numpy()[0].astype(np.float32)
