@@ -245,7 +245,7 @@ def prepare_env(cfg):
 
     scene.build(n_envs=1)
     robot.set_dofs_position(np.array(cfg.home_qpose, dtype=np.float32), motors_idx)
-    return scene, robot, ee, cube, np.array(cfg.home_qpose, np.float32), motors_idx, logger, cam
+    return scene, robot, ee, cube, motors_idx, logger, cam
 
 def get_path(cfg, robot, ee, cube, motors_dof_idx):
     set_gripper(robot, open_frac=0.0)
@@ -284,3 +284,28 @@ def get_path(cfg, robot, ee, cube, motors_dof_idx):
 
     return path, events
 
+
+def manipulate_robot(robot, path, step, motors_dof_idx, events):
+    try:
+        q_cmd = path[step]
+        robot.control_dofs_position(
+            q_cmd[motors_dof_idx],
+            dofs_idx_local=motors_dof_idx
+        )
+        last_cmd = q_cmd
+    except Exception:
+        robot.control_dofs_position(
+            last_cmd[motors_dof_idx],
+            dofs_idx_local=motors_dof_idx
+        )
+
+    # --- gripper events BEFORE stepping ---
+    close_step = events["close_step"]
+    open_step  = events["open_step"]
+
+    if step == open_step:
+        set_gripper(robot, open_frac=0.0)
+    elif step == close_step:
+        set_gripper(robot, open_frac=1.0)
+
+    return q_cmd

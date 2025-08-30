@@ -26,7 +26,7 @@ import numpy as np
 
 from configs.configs import load_config
 from utils.rerun_utils import add_to_logger
-from utils.utils import prepare_env, set_gripper, get_path
+from utils.utils import prepare_env, manipulate_robot, get_path
 
 # ----------------------------- CLI -----------------------------
 
@@ -58,43 +58,19 @@ def main():
     }
     cfg = load_config(args.config, cli_overrides)
 
-    scene, robot, ee, cube, home_qpos, motors_dof_idx, logger, cam = prepare_env(cfg)
+    scene, robot, ee, cube, motors_dof_idx, logger, cam = prepare_env(cfg)
     path, events = get_path(cfg, robot, ee, cube, motors_dof_idx)
     
     dt = float(scene.sim_options.dt)
     t = 0.0
-    step = 0
     cam_every = max(1, int(round(1.0 / (dt * max(1e-9, cfg.cam_fps))))) if (cfg.add_camera and cam is not None) else 0
-
-    last_cmd = home_qpos.copy()
 
     total_steps = len(path)
     if args.duration is not None:
         total_steps = min(total_steps, int(round(args.duration / dt)))
-
-    close_step = events["close_step"]
-    open_step  = events["open_step"]
     
     for i in range(total_steps):
-        try:
-            q_cmd = path[i]
-            robot.control_dofs_position(
-                q_cmd[motors_dof_idx],
-                dofs_idx_local=motors_dof_idx
-            )
-            last_cmd = q_cmd
-        except Exception:
-            robot.control_dofs_position(
-                last_cmd[motors_dof_idx],
-                dofs_idx_local=motors_dof_idx
-            )
-
-        # --- gripper events BEFORE stepping ---
-        # TODO: make the logic proper
-        if step == open_step:
-            set_gripper(robot, open_frac=0.0)
-        elif step == close_step:
-            set_gripper(robot, open_frac=1.0)
+        q_cmd = manipulate_robot(robot, path, i, motors_dof_idx, events)
 
         scene.step()
 
@@ -113,8 +89,6 @@ def main():
                 if rgb.shape[-1] == 4:
                     rgb = rgb[..., :3]
                 logger.log_image(rgb)
-
-        step += 1  # ★ move to the end (optional but tidy)
 
     out_path = logger.save()
     print(f"Saved Rerun recording: {out_path}")
