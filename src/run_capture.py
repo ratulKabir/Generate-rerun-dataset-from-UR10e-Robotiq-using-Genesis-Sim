@@ -111,17 +111,21 @@ def main():
     #   - log state & commands at the current simulation time
     #   - advance sim time
     #   - (optionally) follow wrist with camera and log RGB at target cadence
+    gripper_status = 0.0  # fully open at start
     for i in range(total_steps):
         # Sends control for the arm joints at step i and returns the actual command used
         # (your helper handles edge cases and gripper events using 'events').
-        q_cmd = manipulate_robot(robot, path, i, motors_dof_idx, events)
+        q_cmd, gripper_status_new = manipulate_robot(robot, path, i, motors_dof_idx, events)
 
+        if gripper_status_new is not None:
+            gripper_status = gripper_status_new
+        
         # Advance the physics by one fixed dt.
         scene.step()
 
         # Log all streams at the *current* simulation time t (post-step),
         # then increment t for the next iteration.
-        add_to_logger(logger, robot, ee, motors_dof_idx, t, q_cmd)
+        add_to_logger(logger, robot, ee, motors_dof_idx, t, q_cmd, gripper_status)
         t += dt
 
         # If a camera is present, keep it attached to the wrist and log RGB

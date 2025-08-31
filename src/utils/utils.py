@@ -300,12 +300,15 @@ def manipulate_robot(robot, path, step, motors_dof_idx, events):
     close_step = events["close_step"]
     open_step  = events["open_step"]
 
+    gripper_status = None
     if step == open_step:
-        set_gripper(robot, open_frac=0.0)
+        gripper_status = 0.0
+        set_gripper(robot, open_frac=gripper_status)
     elif step == close_step:
-        set_gripper(robot, open_frac=1.0)
+        gripper_status = 1.0
+        set_gripper(robot, open_frac=gripper_status)
 
-    return q_cmd
+    return q_cmd, gripper_status
 
 def cam_follow_arm_and_log(cam_every, cam, logger, idx):
     if cam is not None:

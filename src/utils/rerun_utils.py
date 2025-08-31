@@ -22,10 +22,10 @@ class RerunLogger:
     def log_cmd(self, q_cmd: np.ndarray):
         rr.log("commands/q_target", rr.Tensor(np.asarray(q_cmd)))
 
-    def log_gripper(self, width_m: float):
+    def log_gripper(self, gripper_status: float):        
         rr.log(
-            "gripper/state/width",
-            rr.Tensor(np.array([float(width_m)], dtype=np.float32))
+            "gripper/state/is_closed",
+            rr.Tensor(np.array([float(gripper_status)], dtype=np.float32))
         )
 
     def log_ee(self, pos_xyz: np.ndarray, quat_xyzw: np.ndarray):
@@ -43,7 +43,7 @@ class RerunLogger:
         return path
 
 
-def add_to_logger(logger, robot, ee, motors_dof_idx, t, q_cmd):
+def add_to_logger(logger, robot, ee, motors_dof_idx, t, q_cmd, gripper_status):
     q = robot.get_dofs_position(dofs_idx_local=motors_dof_idx)[0]
     dq = robot.get_dofs_velocity(dofs_idx_local=motors_dof_idx)[0]
 
@@ -51,12 +51,12 @@ def add_to_logger(logger, robot, ee, motors_dof_idx, t, q_cmd):
     ee_quat_wxyz = ee.get_quat().cpu().numpy()[0]
     ee_quat = np.array([ee_quat_wxyz[1], ee_quat_wxyz[2], ee_quat_wxyz[3], ee_quat_wxyz[0]], dtype=np.float32)
 
-    width_m = get_gripper_width(robot)
+    # width_m = get_gripper_width(robot)
 
     logger.set_time(t)
     logger.log_joint_state(q, dq)
     logger.log_cmd(q_cmd)
-    logger.log_gripper(width_m)
+    logger.log_gripper(gripper_status)
     logger.log_ee(ee_pos, ee_quat)
 
 
