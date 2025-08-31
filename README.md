@@ -72,6 +72,27 @@ To run this project:
     rerun viewer $(ls -t outputs/dataset/*.rrd | head -n 1)
     ```
 
+## Logged Streams
+
+Synchronization isn't a problem since the camera and the robot states measurements have the same clock. The following data streams are recorded:
+
+- **Robot State**
+  - `robot/state/q`: Joint positions (q)
+  - `robot/state/dq`: Joint velocities (dq)
+
+- **Commands**
+  - `commands/q_target`: Target joint positions (commands sent to the robot)
+
+- **Gripper State**
+  - `gripper/state/is_closed`: Gripper status (0.0 = open, 1.0 = closed)
+
+- **End-Effector (EE) Pose**
+  - `world/ee`: End-effector pose in world frame, logged as `Transform3D` with translation and quaternion rotation.
+
+- **Camera Stream**
+  - `cam/rgb`: RGB images from the simulated camera (~30 Hz).
+
+- The logger synchronizes all streams with simulation time (`sim_time`).
 
 
 ## Resources
@@ -81,4 +102,5 @@ To run this project:
 
 ## References
 [1] [mujoco_menagerie](https://github.com/google-deepmind/mujoco_menagerie)
+
 [2] [Genesis](https://genesis-embodied-ai.github.io/)
