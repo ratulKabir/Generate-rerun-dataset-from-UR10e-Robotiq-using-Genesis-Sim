@@ -81,3 +81,4 @@ To run this project:
 
 ## References
 [1] [mujoco_menagerie](https://github.com/google-deepmind/mujoco_menagerie)
+[2] [Genesis](https://genesis-embodied-ai.github.io/)

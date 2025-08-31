@@ -67,10 +67,11 @@ def parse_args() -> argparse.Namespace:
 # --------------------------- Main -------------------------------
 
 def main():
+    # ---- 1) Config: CLI > YAML defaults -------------------------------------
     args = parse_args()
     cli_overrides = {
-        "duration": args.duration,
-        "add_camera": args.add_camera,
+        "duration": args.duration,       # if None, keep YAML 'duration'
+        "add_camera": args.add_camera,   # None means no override
         "outdir": args.outdir,
         "session": args.session,
         "robot_xml": args.robot_xml,
@@ -78,29 +79,56 @@ def main():
     }
     cfg = load_config(args.config, cli_overrides)
 
+    # ---- 2) Build environment & instrumentation -----------------------------
+    # prepare_env() creates the Genesis scene, loads the robot, adds a cube,
+    # resolves motor indices, creates the Rerun logger, and (optionally) mounts a wrist camera.
     scene, robot, ee, cube, motors_dof_idx, logger, cam = prepare_env(cfg)
+
+    # Build the full joint-space path (IK over Cartesian waypoints) and compute
+    # event indices (e.g., when to close/open the gripper).
     path, events = get_path(cfg, robot, ee, cube, motors_dof_idx)
-    
+
+    # Simulation clock (single source of truth). dt is fixed-step physics time.
     dt = float(scene.sim_options.dt)
     t = 0.0
-    cam_every = max(1, int(round(1.0 / (dt * max(1e-9, cfg.cam_fps))))) if (cfg.add_camera and cam is not None) else 0
 
+    # Camera capture cadence in “sim steps per frame”.
+    # Example: dt=0.01 (100 Hz), cam_fps=30 → cam_every ≈ 100/30 ≈ 3–4 steps per frame.
+    cam_every = (
+        max(1, int(round(1.0 / (dt * max(1e-9, cfg.cam_fps)))))
+        if (cfg.add_camera and cam is not None) else 0
+    )
+
+    # If a duration is provided (via YAML or CLI), truncate the path to match it.
     total_steps = len(path)
-    if args.duration is not None:
-        total_steps = min(total_steps, int(round(args.duration / dt)))
-    
+    if cfg.duration is not None:
+        total_steps = min(total_steps, int(round(cfg.duration / dt)))
+
+    # ---- 3) Main simulation loop --------------------------------------------
+    # Each iteration:
+    #   - send joint targets for this step (and trigger gripper events inside manipulate_robot)
+    #   - step physics once
+    #   - log state & commands at the current simulation time
+    #   - advance sim time
+    #   - (optionally) follow wrist with camera and log RGB at target cadence
     for i in range(total_steps):
+        # Sends control for the arm joints at step i and returns the actual command used
+        # (your helper handles edge cases and gripper events using 'events').
         q_cmd = manipulate_robot(robot, path, i, motors_dof_idx, events)
 
+        # Advance the physics by one fixed dt.
         scene.step()
 
-        # ★ log at current t (post-step), then advance time
+        # Log all streams at the *current* simulation time t (post-step),
+        # then increment t for the next iteration.
         add_to_logger(logger, robot, ee, motors_dof_idx, t, q_cmd)
-        t += dt  # 
+        t += dt
 
-        # Camera follow & capture
+        # If a camera is present, keep it attached to the wrist and log RGB
+        # every 'cam_every' sim steps for ~cfg.cam_fps.
         cam_follow_arm_and_log(cam_every, cam, logger, i)
 
+    # ---- 4) Persist Rerun recording -----------------------------------------
     out_path = logger.save()
     print(f"Saved Rerun recording: {out_path}")
 
