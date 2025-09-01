@@ -61,7 +61,8 @@ def cartesian_waypoint_path(robot, ee, waypoints_xyz: List[np.ndarray],
     return np.asarray(path, dtype=np.float32)
 
 
-def make_pick_place_waypoints(cube_pos: np.ndarray,
+def make_pick_place_waypoints(ee_home_pose: np.ndarray, 
+                              cube_pos: np.ndarray,
                               place_xyz: np.ndarray,
                               hover_in: float,
                               hover_out: float,
@@ -95,6 +96,9 @@ def make_pick_place_waypoints(cube_pos: np.ndarray,
 
     postplace  = np.array([place_xyz[0], place_xyz[1], place_top_z + hover_out], np.float32)
 
+    # EE pose you want to consider as "home" (position only; keeps same quat you pass to IK)
+    rest_at_home = np.array(ee_home_pose, np.float32)  # e.g. [x, y, z]
+
     waypoints_xyz: List[np.ndarray] = [
         pregrasp,   # seg 0: pregrasp -> grasp
         grasp,      # seg 1: grasp -> postgrasp
@@ -102,6 +106,7 @@ def make_pick_place_waypoints(cube_pos: np.ndarray,
         preplace,   # seg 3: preplace -> place
         place,      # seg 4: place -> postplace
         postplace,
+        rest_at_home,  # NEW: adds the postplace -> home segment
     ]
 
     # We’ll handle dwell by inserting repeated points into the joint path (below),
@@ -122,7 +127,7 @@ def build_pick_place_joint_path(robot, ee,
     IK path between waypoints. Adds a dwell AFTER reaching 'grasp' so we can close while stationary.
     Returns:
       path:   [T, ndof]
-      events: {'close_step': int, 'open_step': int}
+      events: {'close': List[int], 'open': List[int]}
     """
     per_seg_paths: List[np.ndarray] = []
     seg_start_step_idx: List[int] = []
@@ -227,7 +232,7 @@ def prepare_env(cfg):
     ))
     cube_1 = scene.add_entity(gs.morphs.Box(
         size=tuple(cfg.cube_size),
-        pos=(cfg.cube_pos[0] - 0.25, cfg.cube_pos[1] + 0.15, cube_z),
+        pos=(cfg.cube_pos[0] - 0.25, cfg.cube_pos[1] + 0.2, cube_z),
         fixed=False, collision=True, visualization=True, contype=0xFFFF, conaffinity=0xFFFF
     ))
 
@@ -247,9 +252,14 @@ def prepare_env(cfg):
 
     scene.build(n_envs=1)
     robot.set_dofs_position(np.array(cfg.home_qpose, dtype=np.float32), motors_idx)
+    
+    # read end-effector pose
+    ee_pos = ee.get_pos().cpu().numpy()[0].astype(np.float32)   # (x, y, z)
+    # now save in cfg
+    cfg.home_ee_xyz = ee_pos
     return scene, robot, ee, [cube_0, cube_1], motors_idx, logger, cam
 
-def get_path(cfg, robot, ee, cubes, motors_dof_idx):
+def get_path(cfg, robot, ee, cubes):
     set_gripper(robot, open_frac=0.0)
     all_path = []
     all_close, all_open = [], []
@@ -260,14 +270,13 @@ def get_path(cfg, robot, ee, cubes, motors_dof_idx):
     for i, cube in enumerate(cubes[:2]):  # two cubes
         cube_pos  = cube.get_pos().cpu().numpy()[0].astype(np.float32)
         place_xyz = np.array(cfg.place_xyz, dtype=np.float32)
-
+        # TODO: Move end pos to config
+        if i:
+            place_xyz[0] += 0.05  # offset y for second cube
         waypoints_xyz, seg_events = make_pick_place_waypoints(
-            cube_pos=cube_pos, place_xyz=place_xyz,
+            ee_home_pose=cfg.home_ee_xyz, cube_pos=cube_pos, place_xyz=place_xyz,
             hover_in=cfg.hover_in, hover_out=cfg.hover_out, margin_z=cfg.margin_z
         )
-        # TODO: remove dirty hack
-        if i > 0:  # from cube 1 onwards
-            steps = cfg.steps_per_segment * 2  # slow down entry
         # Your existing converter: segments -> joint path (+ dwell inside) + step events
         path_i, events_i = build_pick_place_joint_path(
             robot, ee, waypoints_xyz=waypoints_xyz, quat_wxyz=ee_quat_wxyz,

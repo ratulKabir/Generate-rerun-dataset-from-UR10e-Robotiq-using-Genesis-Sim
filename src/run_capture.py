@@ -86,7 +86,7 @@ def main():
 
     # Build the full joint-space path (IK over Cartesian waypoints) and compute
     # event indices (e.g., when to close/open the gripper).
-    path, events = get_path(cfg, robot, ee, cubes, motors_dof_idx)
+    path, events = get_path(cfg, robot, ee, cubes)
 
     # Simulation clock (single source of truth). dt is fixed-step physics time.
     dt = float(scene.sim_options.dt)
