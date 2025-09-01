@@ -18,7 +18,7 @@ hover_in: 0.8
 hover_out: 0.8
 margin_z: 0.28
 dwell_steps: 50
-steps_per_segment: 150
+steps_per_segment: 120
 
 # Camera
 add_camera: true
