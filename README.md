@@ -40,6 +40,10 @@ To set up the required Python packages, follow these steps **in order**:
     ```bash
     pip install "numpy<2.0" --force-reinstall
     ```
+6. Install Yaml.
+    ```bash
+    pip install pyyaml
+    ```
 
 ### Library Versions
 
@@ -50,6 +54,7 @@ To set up the required Python packages, follow these steps **in order**:
 | `numpy`        | 1.26.4      |
 | `tetgen`       | 0.6.7       |
 | `torch`        | 2.6.0+cu124 |
+| `pyyaml`        | 6.0.2       |
 
 
 > **Note:**  
