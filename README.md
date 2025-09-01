@@ -112,6 +112,13 @@ The animation above demonstrates the rerun dataset analysis. It shows:
 - The joint position `/robot/state/q` measurements for each degree of freedom (DOF) of the robot arm.
 - The gripper's open/close status `/gripper/state/is_closed`, indicating whether the gripper is holding an object or not.
 
+## Imprvements
+- Improve Robot initial rapid movement.
+- Improve planning by making it independent of predefined time boundary.
+- Add automated Language Task generation based on the events used for path planning.
+- Move hard coded params to config.
+- Improve code structure.
+
 ## Resources
 - [UR10e robot xml](https://github.com/google-deepmind/mujoco_menagerie/tree/main/universal_robots_ur10e)
 - [Robotiq 2F-85](https://github.com/google-deepmind/mujoco_menagerie/blob/main/robotiq_2f85/README.md)
