@@ -123,7 +123,7 @@ The animation above demonstrates the rerun dataset analysis. It shows:
 - Add automated Language Task generation based on the events used for path planning.
 - Move hard coded params to config.
 - Improve code structure.
-- Add Docker.
+- Add Docker. Add requirements.txt or Poetry.
 
 ## Resources
 - [UR10e robot xml](https://github.com/google-deepmind/mujoco_menagerie/tree/main/universal_robots_ur10e)
