@@ -220,9 +220,14 @@ def prepare_env(cfg):
     robot = scene.add_entity(gs.morphs.MJCF(file=cfg.robot_xml))
 
     cube_z = cfg.cube_size[2] / 2.0
-    cube = scene.add_entity(gs.morphs.Box(
+    cube_0 = scene.add_entity(gs.morphs.Box(
         size=tuple(cfg.cube_size),
         pos=(cfg.cube_pos[0], cfg.cube_pos[1], cube_z),
+        fixed=False, collision=True, visualization=True, contype=0xFFFF, conaffinity=0xFFFF
+    ))
+    cube_1 = scene.add_entity(gs.morphs.Box(
+        size=tuple(cfg.cube_size),
+        pos=(cfg.cube_pos[0] - 0.25, cfg.cube_pos[1] + 0.15, cube_z),
         fixed=False, collision=True, visualization=True, contype=0xFFFF, conaffinity=0xFFFF
     ))
 
@@ -242,7 +247,7 @@ def prepare_env(cfg):
 
     scene.build(n_envs=1)
     robot.set_dofs_position(np.array(cfg.home_qpose, dtype=np.float32), motors_idx)
-    return scene, robot, ee, cube, motors_idx, logger, cam
+    return scene, robot, ee, cube_0, motors_idx, logger, cam
 
 def get_path(cfg, robot, ee, cube, motors_dof_idx):
     set_gripper(robot, open_frac=0.0)
