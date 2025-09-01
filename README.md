@@ -1,5 +1,7 @@
 # Generate-rerun-dataset-from-UR10e-Robotiq-using-Genesis-Sim
 
+(Click image below to watch the video demo.)
+
 <a href="https://youtu.be/QQWXPEXPVyE">
   <img src="media/demo.png" alt="Watch the demo" width="800">
 </a>
@@ -99,6 +101,16 @@ Synchronization isn't a problem since the camera and the robot states measuremen
 
 - The logger synchronizes all streams with simulation time (`sim_time`).
 
+### Demo of rerun dataset analysis
+<p align="center">
+  <img src="media/demo_rerun.gif" alt="Rerun dataset analysis demo" width="800">
+</p>
+
+The animation above demonstrates the rerun dataset analysis. It shows:
+
+- The RGB image stream `/cam/rgb` from the camera mounted on the robot.
+- The joint position `/robot/state/q` measurements for each degree of freedom (DOF) of the robot arm.
+- The gripper's open/close status `/gripper/state/is_closed`, indicating whether the gripper is holding an object or not.
 
 ## Resources
 - [UR10e robot xml](https://github.com/google-deepmind/mujoco_menagerie/tree/main/universal_robots_ur10e)
