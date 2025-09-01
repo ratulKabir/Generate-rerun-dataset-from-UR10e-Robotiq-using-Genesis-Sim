@@ -108,11 +108,11 @@ Synchronization isn't a problem since the camera and the robot states measuremen
 
 The animation above demonstrates the rerun dataset analysis. It shows:
 
-- The RGB image stream `/cam/rgb` from the camera mounted on the robot.
-- The joint position `/robot/state/q` measurements for each degree of freedom (DOF) of the robot arm.
-- The gripper's open/close status `/gripper/state/is_closed`, indicating whether the gripper is holding an object or not.
+- _[Left]_ The RGB image stream `/cam/rgb` from the camera mounted on the robot.
+- _[Upper Right]_ The joint position `/robot/state/q` measurements for each degree of freedom (DOF) of the robot arm. **The smooth transition of the colors indicate that the robot joints move smoothly.**
+- _[Lower Right]_ The gripper's open/close status `/gripper/state/is_closed`, indicating whether the gripper is holding an object or not. **The Gripper status Yollow indicates that the Gripper is closed and Purple indicates open Gripper. Focus on the image and watch the color changing as the open/close command is send to the Gripper.**
 
-## Imprvements
+## Improvements
 - Improve Robot initial rapid movement.
 - Improve planning by making it independent of predefined time boundary.
 - Add automated Language Task generation based on the events used for path planning.
