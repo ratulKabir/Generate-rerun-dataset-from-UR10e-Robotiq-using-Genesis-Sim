@@ -82,11 +82,11 @@ def main():
     # ---- 2) Build environment & instrumentation -----------------------------
     # prepare_env() creates the Genesis scene, loads the robot, adds a cube,
     # resolves motor indices, creates the Rerun logger, and (optionally) mounts a wrist camera.
-    scene, robot, ee, cube, motors_dof_idx, logger, cam = prepare_env(cfg)
+    scene, robot, ee, cubes, motors_dof_idx, logger, cam = prepare_env(cfg)
 
     # Build the full joint-space path (IK over Cartesian waypoints) and compute
     # event indices (e.g., when to close/open the gripper).
-    path, events = get_path(cfg, robot, ee, cube, motors_dof_idx)
+    path, events = get_path(cfg, robot, ee, cubes, motors_dof_idx)
 
     # Simulation clock (single source of truth). dt is fixed-step physics time.
     dt = float(scene.sim_options.dt)

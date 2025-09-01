@@ -117,7 +117,7 @@ def build_pick_place_joint_path(robot, ee,
                                 waypoints_xyz: List[np.ndarray],
                                 quat_wxyz: Optional[np.ndarray],
                                 steps_per_segment: int,
-                                dwell_steps: int):
+                                dwell_steps: int) -> Tuple[np.ndarray, dict]:
     """
     IK path between waypoints. Adds a dwell AFTER reaching 'grasp' so we can close while stationary.
     Returns:
@@ -174,7 +174,7 @@ def build_pick_place_joint_path(robot, ee,
     # Fire OPEN after finishing segment 3 (preplace->place)
     open_step = end_of_segment(3)
 
-    events = {"close_step": int(close_step), "open_step": int(open_step)}
+    events = {"close": int(close_step), "open": int(open_step)}
     return path, events
 
 
@@ -247,43 +247,43 @@ def prepare_env(cfg):
 
     scene.build(n_envs=1)
     robot.set_dofs_position(np.array(cfg.home_qpose, dtype=np.float32), motors_idx)
-    return scene, robot, ee, cube_0, motors_idx, logger, cam
+    return scene, robot, ee, [cube_0, cube_1], motors_idx, logger, cam
 
-def get_path(cfg, robot, ee, cube, motors_dof_idx):
+def get_path(cfg, robot, ee, cubes, motors_dof_idx):
     set_gripper(robot, open_frac=0.0)
+    all_path = []
+    all_close, all_open = [], []
+    step_offset = 0
+
     ee_quat_wxyz = ee.get_quat().cpu().numpy()[0].astype(np.float32)
 
-    cube_pos = cube.get_pos().cpu().numpy()[0].astype(np.float32)
-    place_xyz = np.array(cfg.place_xyz, dtype=np.float32)
+    for i, cube in enumerate(cubes[:2]):  # two cubes
+        cube_pos  = cube.get_pos().cpu().numpy()[0].astype(np.float32)
+        place_xyz = np.array(cfg.place_xyz, dtype=np.float32)
 
-    waypoints_xyz, _ = make_pick_place_waypoints(
-        cube_pos=cube_pos, place_xyz=place_xyz,
-        hover_in=cfg.hover_in, hover_out=cfg.hover_out,
-        margin_z=cfg.margin_z
-    )
+        waypoints_xyz, seg_events = make_pick_place_waypoints(
+            cube_pos=cube_pos, place_xyz=place_xyz,
+            hover_in=cfg.hover_in, hover_out=cfg.hover_out, margin_z=cfg.margin_z
+        )
+        # TODO: remove dirty hack
+        if i > 0:  # from cube 1 onwards
+            steps = cfg.steps_per_segment * 2  # slow down entry
+        # Your existing converter: segments -> joint path (+ dwell inside) + step events
+        path_i, events_i = build_pick_place_joint_path(
+            robot, ee, waypoints_xyz=waypoints_xyz, quat_wxyz=ee_quat_wxyz,
+            steps_per_segment=cfg.steps_per_segment, dwell_steps=cfg.dwell_steps
+        )
 
-    path, events = build_pick_place_joint_path(
-        robot, ee, waypoints_xyz=waypoints_xyz, quat_wxyz=ee_quat_wxyz,
-        steps_per_segment=cfg.steps_per_segment, dwell_steps=cfg.dwell_steps,
-    )
+        if path_i.size > 0:
+            all_path.append(path_i)
+            # shift local events by accumulated steps so far
+            all_close.append(step_offset + int(events_i["close"]))
+            all_open.append(step_offset + int(events_i["open"]))
+            step_offset += path_i.shape[0]
 
-    # 6) Append a return-to-home at the end
-    home_qpos = cfg.home_qpose
-
-    tail = []
-    if path.shape[0] > 0:
-        q_curr = path[-1]  # full actuated dof vector (e.g., 14)
-        # Build a full-length target that keeps non-arm joints as-is
-        home_full = q_curr.copy()
-        home_full[motors_dof_idx] = home_qpos  # set only the 6 arm joints
-
-        for s in range(120):  # ~1–2s blend
-            u = (s + 1) / 120.0
-            tail.append((1 - u) * q_curr + u * home_full)
-
-    if tail:
-        path = np.concatenate([path, np.asarray(tail, dtype=np.float32)], axis=0)
-
+    # Optionally add your existing “return to home” tail here (once), then:
+    path = np.concatenate(all_path, axis=0) if all_path else np.zeros((0, len(cfg.home_qpose)), np.float32)
+    events = {"close": all_close, "open": all_open}
     return path, events
 
 
@@ -302,14 +302,14 @@ def manipulate_robot(robot, path, step, motors_dof_idx, events):
         )
 
     # --- gripper events BEFORE stepping ---
-    close_step = events["close_step"]
-    open_step  = events["open_step"]
+    close_steps = events["close"]
+    open_steps  = events["open"]
 
     gripper_status = None
-    if step == open_step:
+    if step in open_steps:
         gripper_status = 0.0
         set_gripper(robot, open_frac=gripper_status)
-    elif step == close_step:
+    elif step in close_steps:
         gripper_status = 1.0
         set_gripper(robot, open_frac=gripper_status)
 
