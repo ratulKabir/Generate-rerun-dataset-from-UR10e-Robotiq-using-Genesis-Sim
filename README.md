@@ -109,8 +109,8 @@ Synchronization isn't a problem since the camera and the robot states measuremen
 The animation above demonstrates the rerun dataset analysis. It shows:
 
 - _[Left]_ The RGB image stream `/cam/rgb` from the camera mounted on the robot.
-- _[Upper Right]_ The joint position `/robot/state/q` measurements for each degree of freedom (DOF) of the robot arm. **The smooth transition of the colors indicate that the robot joints move smoothly.**
-- _[Lower Right]_ The gripper's open/close status `/gripper/state/is_closed`, indicating whether the gripper is holding an object or not. **The Gripper status Yollow indicates that the Gripper is closed and Purple indicates open Gripper. Focus on the image and watch the color changing as the open/close command is send to the Gripper.**
+- _[Upper Right]_ The Joint positions measurements `/robot/state/q` for each degree of freedom (DOF) of the robot arm. **The smooth transition of the colors indicate that the robot joints move smoothly.**
+- _[Lower Right]_ The Gripper's open/close status `/gripper/state/is_closed`, indicating whether the Gripper is open or close. **The Yellow status indicates that the Gripper is closed and the Purple status indicates that the Gripper is open. Focus on the image and watch the color changing as the open/close command is send to the Gripper.**
 
 ## Improvements
 - Improve Robot initial rapid movement.
@@ -118,6 +118,7 @@ The animation above demonstrates the rerun dataset analysis. It shows:
 - Add automated Language Task generation based on the events used for path planning.
 - Move hard coded params to config.
 - Improve code structure.
+- Add Docker.
 
 ## Resources
 - [UR10e robot xml](https://github.com/google-deepmind/mujoco_menagerie/tree/main/universal_robots_ur10e)
