@@ -24,7 +24,7 @@ steps_per_segment: 120
 add_camera: true
 cam_fps: 30.0
 cam_res: [640, 480]
-cam_tilt_deg: 60         # wrist cam tilt about X (down)
+cam_tilt_deg: 70        # wrist cam tilt about X (down)
 cam_offset_xyz: [0.0, 0.0, 0.2]
 
 # Cube
