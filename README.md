@@ -2,8 +2,8 @@
 
 (Click image below to watch the video demo.)
 
-<a href="https://youtu.be/QQWXPEXPVyE">
-  <img src="media/demo.png" alt="Watch the demo" width="800">
+<a href="https://youtu.be/kLA6LqpGMzE">
+  <img src="media/demo_multi_env.png" alt="Watch the demo" width="800">
 </a>
 
 
@@ -101,7 +101,7 @@ Synchronization isn't a problem since the camera and the robot states measuremen
 
 - The logger synchronizes all streams with simulation time (`sim_time`).
 
-### Demo of rerun dataset analysis
+### Demo of rerun dataset analysis (Not tested for multi env, check branch `feature/single_env` for tested rerun dataset generation) 
 <p align="center">
   <img src="media/demo_rerun.gif" alt="Rerun dataset analysis demo" width="800">
 </p>
