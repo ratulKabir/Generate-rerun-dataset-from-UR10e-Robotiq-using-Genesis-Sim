@@ -28,8 +28,14 @@ def get_driver_dof_indices(robot):
 def set_gripper(robot, open_frac: float):
     open_frac = float(np.clip(open_frac, 0.0, 1.0))
     idxs = get_driver_dof_indices(robot)
-    q = [open_frac] * len(idxs)   # symmetric opening
-    robot.control_dofs_position(np.array(q, dtype=np.float32), dofs_idx_local=idxs)
+
+    # per-env command matrix
+    n_envs = robot.scene.n_envs
+    q = np.array([open_frac] * len(idxs), dtype=np.float32)  # (n_dofs,)
+    q = np.tile(q[None, :], (n_envs, 1))  # (n_envs, n_dofs)
+
+    robot.control_dofs_position(q, dofs_idx_local=idxs)
+
 
 # -------- IK path builder over Cartesian waypoints --------
 def cartesian_waypoint_path(robot, ee, waypoints_xyz: List[np.ndarray],
@@ -37,28 +43,40 @@ def cartesian_waypoint_path(robot, ee, waypoints_xyz: List[np.ndarray],
                             steps_per_segment: int = 60) -> np.ndarray:
     """
     Sequential IK to follow Cartesian points with (optional) fixed orientation.
-    Returns a (N, ndof) numpy array of joint configs.
+    Returns an (n_envs, N, ndof) numpy array of joint configs.
     """
+    n_envs = robot.scene.n_envs
+    ndof = robot.get_dofs_position().shape[1]
+
     path = []
-    q_curr = robot.get_dofs_position()[0]  # current full dofs (actuated)
+    q_curr = robot.get_dofs_position().cpu().numpy()  # (n_envs, ndof)
+
     for i in range(len(waypoints_xyz) - 1):
         a = waypoints_xyz[i]
         b = waypoints_xyz[i + 1]
+
         for s in range(steps_per_segment):
             u = (s + 1) / steps_per_segment
             p = (1 - u) * a + u * b
+
+            # broadcast target pos & orientation across all envs
+            pos = np.tile(p[None, :], (n_envs, 1))
             if quat_wxyz is not None:
-                qpos = robot.inverse_kinematics(link=ee, pos=p[None, :], quat=quat_wxyz[None, :])
+                quat = np.tile(quat_wxyz[None, :], (n_envs, 1))
+                qpos = robot.inverse_kinematics(link=ee, pos=pos, quat=quat)
             else:
-                qpos = robot.inverse_kinematics(link=ee, pos=p[None, :])
+                qpos = robot.inverse_kinematics(link=ee, pos=pos)
+
             if qpos is None:
-                # keep last known pose if IK fails momentarily
                 qnext = q_curr
             else:
-                qnext = qpos[0].cpu().numpy()
+                qnext = qpos.cpu().numpy()
                 q_curr = qnext
+
             path.append(qnext)
-    return np.asarray(path, dtype=np.float32)
+
+    return np.asarray(path, dtype=np.float32)  # shape: (N, n_envs, ndof)
+
 
 
 def make_pick_place_waypoints(ee_home_pose: np.ndarray, 
@@ -212,10 +230,10 @@ def prepare_env(cfg):
 
     scene = gs.Scene(
         viewer_options=gs.options.ViewerOptions(
-            camera_pos=(0, -3.5, 2.5), 
+            camera_pos=(-2.5, -5.5, 2.0), 
             camera_lookat=(0.0, 0.0, 0.5), 
             camera_fov=30, 
-            max_FPS=60,
+            max_FPS=40,
         ),
         sim_options=gs.options.SimOptions(dt=cfg.dt),
         show_viewer=(not cfg.headless),
@@ -250,8 +268,16 @@ def prepare_env(cfg):
         offset_T[:3, :3] = R_x
         cam.attach(ee, offset_T)
 
-    scene.build(n_envs=1)
-    robot.set_dofs_position(np.array(cfg.home_qpose, dtype=np.float32), motors_idx)
+    scene.build(n_envs=cfg.n_envs, env_spacing=(1.5, 1.5))
+
+    home_qpose = np.array(cfg.home_qpose, dtype=np.float32)
+
+    # Add small random offsets per environment (e.g. ±0.05 rad on each joint)
+    noise_scale = getattr(cfg, "home_qpose_noise", 0.05)
+    home_qposes = np.tile(home_qpose[None, :], (cfg.n_envs, 1))
+    home_qposes += np.random.uniform(-noise_scale, noise_scale, home_qposes.shape).astype(np.float32)
+
+    robot.set_dofs_position(np.array(home_qposes, dtype=np.float32), motors_idx)
     
     # read end-effector pose
     ee_pos = ee.get_pos().cpu().numpy()[0].astype(np.float32)   # (x, y, z)
@@ -297,32 +323,42 @@ def get_path(cfg, robot, ee, cubes):
 
 
 def manipulate_robot(robot, path, step, motors_dof_idx, events):
+    n_envs = robot.scene.n_envs
+
+    # Safe initialization
+    q_cmd = None
+    last_cmd = getattr(manipulate_robot, "_last_cmd", np.zeros((n_envs, len(motors_dof_idx)), dtype=np.float32))
+
     try:
-        q_cmd = path[step]
+        # Each step’s path: (n_envs, n_dofs)
+        q_cmd = path[step]  # (n_envs, n_dofs)
         robot.control_dofs_position(
-            q_cmd[motors_dof_idx],
+            q_cmd[:, motors_dof_idx],  # select joint subset for all envs
             dofs_idx_local=motors_dof_idx
         )
         last_cmd = q_cmd
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] control failed at step {step}: {e}")
+        # fallback to last known command
         robot.control_dofs_position(
-            last_cmd[motors_dof_idx],
+            last_cmd[:, motors_dof_idx],
             dofs_idx_local=motors_dof_idx
         )
 
-    # --- gripper events BEFORE stepping ---
-    close_steps = events["close"]
-    open_steps  = events["open"]
+    # persist last_cmd across calls
+    manipulate_robot._last_cmd = last_cmd
 
+    # --- gripper events BEFORE stepping ---
     gripper_status = None
-    if step in open_steps:
+    if step in events.get("open", []):
         gripper_status = 0.0
         set_gripper(robot, open_frac=gripper_status)
-    elif step in close_steps:
+    elif step in events.get("close", []):
         gripper_status = 1.0
         set_gripper(robot, open_frac=gripper_status)
 
     return q_cmd, gripper_status
+
 
 def cam_follow_arm_and_log(cam_every, cam, logger, idx):
     if cam is not None:

@@ -9,6 +9,7 @@ class Config:
     outdir: str = "outputs/dataset"
     session: Optional[str] = None
 
+    n_envs: int = 1
     dt: float = 0.01
     duration: Optional[float] = None
     headless: bool = False

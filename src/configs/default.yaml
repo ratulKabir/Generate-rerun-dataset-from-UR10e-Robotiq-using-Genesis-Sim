@@ -5,6 +5,7 @@ outdir: "outputs/dataset"
 session: null            # if null, auto: session_<YYYYMMDD_HHMMSS>.rrd
 
 # Simulation
+n_envs: 6
 dt: 0.01                 # physics timestep [s]
 duration: null           # max duration [s]; null = full traj
 headless: false          # set true to hide viewer
